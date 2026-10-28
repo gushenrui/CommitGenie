@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<idea-plugin>
+    <id>com.gushenrui.commitgenie</id>
+    <name>CommitGenie</name>
+    <vendor>gushenrui</vendor>
+
+    <description><![CDATA[
+        使用任意 OpenAI 兼容接口的模型生成 Git 提交信息。<br/>
+        在提交面板的消息输入框工具栏点击按钮，或按 ⌃\ 快捷键，
+        即可根据当前勾选的变更生成提交信息。<br/>
+        支持采样仓库历史提交作为风格参考，生成过程可随时取消。
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.vcs</depends>
+    <depends>Git4Idea</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <applicationService
+                serviceImplementation="com.gushenrui.commitgenie.settings.CommitGenieSettings"/>
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.gushenrui.commitgenie.settings.CommitGenieConfigurable"
+                id="com.gushenrui.commitgenie.settings"
+                displayName="CommitGenie"/>
+        <notificationGroup id="CommitGenie" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <action id="CommitGenie.SuggestCommitMessage"
+                class="com.gushenrui.commitgenie.action.SuggestCommitMessageAction"
+                icon="com.gushenrui.commitgenie.action.CommitGenieIcons.SUGGEST_COMMIT_MESSAGE"
+                text="Suggest Commit Message"
+                description="根据当前选中的变更生成提交信息">
+            <keyboard-shortcut first-keystroke="control BACK_SLASH" keymap="$default"/>
+            <add-to-group group-id="Vcs.MessageActionGroup" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>
