@@ -13,25 +13,31 @@ import java.awt.Container
  *
  * 平台没有公开「生成中」的 API，只能复用提交框内部的 [JBLoadingPanel]。
  * 结构一旦变化，这些调用会自动降级为无效果，不影响生成结果写回。
- *
- * loadingText 属性标记为 @ApiStatus.Internal，这里沿用平台默认文案，不做覆盖。
  */
 internal object CommitMessageLoading {
 
-    /** 加载态占位，保留类型以便与调用方约定生命周期。 */
-    class Snapshot
+    private const val LOADING_TEXT = "Generating commit message"
+
+    /** 记录进入加载态前的文案，退出时还原。 */
+    class Snapshot(val oldLoadingText: String)
 
     fun start(ui: CommitMessageUi): Snapshot {
         editorField(ui)?.isVisible = false
         ui.startLoading()
-        return Snapshot()
+        val panel = loadingPanel(ui)
+        val oldText = panel?.getLoadingText().orEmpty()
+        panel?.setLoadingText(LOADING_TEXT)
+        return Snapshot(oldText)
     }
 
     fun stop(ui: CommitMessageUi, snapshot: Snapshot) {
         editorField(ui)?.isVisible = true
         ui.stopLoading()
         // stopLoading 之后平台仍保留遮罩层，需要手动隐藏
-        loadingPanel(ui)?.hideLoadingLayer()
+        loadingPanel(ui)?.let { panel ->
+            panel.hideLoadingLayer()
+            panel.setLoadingText(snapshot.oldLoadingText)
+        }
     }
 
     private fun editorField(ui: CommitMessageUi): EditorTextField? =

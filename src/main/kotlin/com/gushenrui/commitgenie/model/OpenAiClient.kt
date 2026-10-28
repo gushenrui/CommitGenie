@@ -70,7 +70,11 @@ class OpenAiClient(
                     "detail=${e.message.orEmpty().take(500)}",
                 e,
             )
-            throw IOException("模型接口返回 ${e.statusCode}: ${e.message.orEmpty().take(500)}", e)
+            val detail = e.message.orEmpty()
+            if (isPayloadTooLarge(e.statusCode, detail)) {
+                throw PayloadTooLargeException("请求内容超出模型上限：$detail", e)
+            }
+            throw IOException("模型接口返回 ${e.statusCode}: ${detail.take(500)}", e)
         } catch (e: IOException) {
             // 部分网关不触发 HttpStatusException，错误会以普通 IOException 抛出
             LOG.warn(
@@ -78,14 +82,32 @@ class OpenAiClient(
                     "model=${model.trim()} bodyLen=${prompt.length} msg=${e.message}",
                 e,
             )
+            if (isPayloadTooLarge(extractStatusCode(e.message), e.message.orEmpty())) {
+                throw PayloadTooLargeException("请求内容超出模型上限：${e.message}", e)
+            }
             throw e
         }
     }
 
+    /** 413 明确表示体过大；400 需要结合响应文案判断。 */
+    private fun isPayloadTooLarge(status: Int, detail: String): Boolean {
+        if (status == 413) return true
+        if (status != 400) return false
+        val lower = detail.lowercase()
+        return OVERSIZE_HINTS.any { lower.contains(it) }
+    }
+
+    private fun extractStatusCode(message: String?): Int =
+        message?.let { STATUS_PATTERN.find(it)?.groupValues?.getOrNull(1)?.toIntOrNull() } ?: -1
+
+    /** 请求体超出模型上下文或服务端限制。 */
+    class PayloadTooLargeException(message: String, cause: Throwable) : IOException(message, cause)
+
     private fun endpoint(): String = baseUrl.trimEnd('/') + "/chat/completions"
 
     private fun requestBody(prompt: String): String =
-        """{"model":${quote(model)},"stream":true,"messages":[{"role":"user","content":${quote(prompt)}}]}"""
+        """{"model":${quote(model)},"stream":true,"temperature":1,""" +
+                """"messages":[{"role":"user","content":${quote(prompt)}}]}"""
 
     /** 最小化的 JSON 转义，避免为大请求引入额外对象图。 */
     private fun quote(value: String): String = buildString(value.length + 2) {
@@ -164,6 +186,13 @@ class OpenAiClient(
     companion object {
         private const val DEFAULT_TIMEOUT_MS = 120_000
         private const val DONE = "[DONE]"
+
+        /** 响应文案里暗示「内容过大」的关键词，用于把 400 细化成更明确的提示。 */
+        private val OVERSIZE_HINTS = listOf(
+            "too large", "too long", "maximum context", "context length",
+            "max_tokens", "exceeds", "payload", "request entity",
+        )
+        private val STATUS_PATTERN = Regex("""response code:?\s*(\d{3})""", RegexOption.IGNORE_CASE)
 
         private val LOG = Logger.getInstance(OpenAiClient::class.java)
     }

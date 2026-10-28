@@ -1,22 +1,27 @@
 package com.gushenrui.commitgenie.action
 
-import com.intellij.openapi.actionSystem.ActionUpdateThread
-import com.intellij.openapi.actionSystem.AnAction
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.application.EDT
-import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Key
-import com.intellij.openapi.vcs.VcsDataKeys
-import com.intellij.openapi.vcs.changes.Change
-import com.intellij.vcs.commit.CommitMessageUi
-import com.intellij.vcs.commit.CommitWorkflowHandler
-import com.intellij.vcs.commit.CommitWorkflowUi
 import com.gushenrui.commitgenie.git.DiffBuilder
 import com.gushenrui.commitgenie.git.VcsChanges
 import com.gushenrui.commitgenie.model.OpenAiClient
 import com.gushenrui.commitgenie.prompt.PromptBuilder
 import com.gushenrui.commitgenie.settings.CommitGenieSettings.Companion.instance
+import com.intellij.ide.HelpTooltip
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.Presentation
+import com.intellij.openapi.actionSystem.impl.ActionButton
+import com.intellij.openapi.application.EDT
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.keymap.KeymapUtil
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Key
+import com.intellij.openapi.util.text.HtmlChunk
+import com.intellij.openapi.vcs.VcsDataKeys
+import com.intellij.openapi.vcs.changes.Change
+import com.intellij.vcs.commit.CommitMessageUi
+import com.intellij.vcs.commit.CommitWorkflowHandler
+import com.intellij.vcs.commit.CommitWorkflowUi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -50,10 +55,11 @@ class SuggestCommitMessageAction : AnAction() {
             presentation.setText(STOP_TEXT)
             presentation.description = "点击取消本次提交信息生成"
             presentation.isEnabled = true
+            disableRichTooltip(presentation)
             return
         }
 
-        val hasChanges = VcsChanges.includedChanges(project).isNotEmpty()
+        val hasChanges = VcsChanges.includedChanges(project, workflow).isNotEmpty()
         val isAmend = handler.isAmendMode
         val configured = instance.isConfigured
 
@@ -66,6 +72,7 @@ class SuggestCommitMessageAction : AnAction() {
             else -> "根据当前选中的变更生成提交信息"
         }
         presentation.isEnabled = !isAmend && hasChanges && configured
+        enableRichTooltip(presentation, this)
     }
 
     override fun actionPerformed(event: AnActionEvent) {
@@ -116,7 +123,7 @@ class SuggestCommitMessageAction : AnAction() {
         messageUi: CommitMessageUi,
     ): String? {
         val settings = instance
-        val changes: List<Change> = VcsChanges.includedChanges(project)
+        val changes: List<Change> = VcsChanges.includedChanges(project, workflow)
         if (changes.isEmpty()) {
             Notifications.warn(project, "没有可生成的变更")
             return null
@@ -146,6 +153,17 @@ class SuggestCommitMessageAction : AnAction() {
         } catch (e: CancellationException) {
             // 取消信号必须继续向上传播，否则 finally 里的收尾逻辑会误判为正常结束
             throw e
+        } catch (e: OpenAiClient.PayloadTooLargeException) {
+            LOG.warn("变更过大，模型无法处理", e)
+            Notifications.warn(
+                project,
+                "变更过大，无法由模型总结。请缩小勾选范围或调小 Diff 最大字符数。"
+            )
+            null
+        } catch (e: java.net.SocketTimeoutException) {
+            LOG.warn("模型响应超时", e)
+            Notifications.warn(project, "模型未在超时时间内响应，请稍后重试。")
+            null
         } catch (e: Exception) {
             LOG.warn("生成提交信息失败", e)
             Notifications.error(project, "生成失败：${e.message ?: e.javaClass.simpleName}")
@@ -157,6 +175,29 @@ class SuggestCommitMessageAction : AnAction() {
     private class RunningJob(val snapshot: CommitMessageLoading.Snapshot) {
         @Volatile
         var job: Job? = null
+    }
+
+    /**
+     * 给按钮挂富文本提示（标题 + 说明 + 快捷键），与 Gemini 原版一致。
+     *
+     * 普通 tooltip 只会显示 description，禁用时甚至可能不显示；
+     * [ActionButton.CUSTOM_HELP_TOOLTIP] 能保证禁用态也给出原因。
+     */
+    private fun enableRichTooltip(presentation: Presentation, action: AnAction) {
+        val tooltip = HelpTooltip()
+        // 按钮只显示图标、text 为空，原版此时不设标题，这里保持一致
+        presentation.text?.takeIf { it.isNotEmpty() }
+            ?.let { tooltip.setTitle(HtmlChunk.text(it)) }
+        presentation.description?.let { tooltip.setDescription(HtmlChunk.text(it)) }
+        val shortcut = KeymapUtil.getFirstKeyboardShortcutText(action.shortcutSet)
+        if (shortcut.isNotEmpty()) {
+            tooltip.setShortcut(shortcut)
+        }
+        presentation.putClientProperty(ActionButton.CUSTOM_HELP_TOOLTIP, tooltip)
+    }
+
+    private fun disableRichTooltip(presentation: Presentation) {
+        presentation.putClientProperty(ActionButton.CUSTOM_HELP_TOOLTIP, null)
     }
 
     private companion object {
