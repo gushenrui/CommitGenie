@@ -1,5 +1,7 @@
 # CommitGenie
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 为 Android Studio / IntelliJ IDEA 提供 AI 生成 Git 提交信息的能力，复刻 Android Studio 内置 Gemini
 插件「Suggest commit message」的交互与提示词，但 **完全独立**：不依赖 Gemini 插件，可自由接入任意 OpenAI
 兼容接口。
@@ -117,3 +119,7 @@ src/main/kotlin/com/gushenrui/commitgenie/
 
 提示词语义与交互设计参考 Android Studio 内置 Gemini 插件的「Suggest commit
 message」功能。本项目为独立实现，与该功能无官方关联。
+
+## 许可
+
+[MIT](LICENSE)。
