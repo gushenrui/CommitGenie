@@ -4,9 +4,7 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.util.io.HttpRequests
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
@@ -36,7 +34,6 @@ class ModelClient(
      */
     suspend fun generate(
         prompt: String,
-        indicator: ProgressIndicator?,
         onDelta: (String) -> Unit = {},
     ): String = withContext(Dispatchers.IO) {
         // connect 的回调不是挂起函数，先取出上下文供循环内检查取消
@@ -77,9 +74,6 @@ class ModelClient(
                     request.reader.use { reader ->
                         while (true) {
                             context.ensureActive()
-                            if (indicator?.isCanceled == true) {
-                                throw CancellationException("用户取消生成")
-                            }
                             val line = reader.readLine() ?: break
                             if (sink.consume(line)) {
                                 onDelta(sink.text)

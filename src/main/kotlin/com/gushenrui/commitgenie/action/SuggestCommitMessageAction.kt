@@ -210,7 +210,7 @@ class SuggestCommitMessageAction : AnAction() {
         )
 
         return try {
-            normalize(client.generate(prompt, indicator = null, onDelta)).trim()
+            normalize(client.generate(prompt, onDelta)).trim()
         } catch (e: CancellationException) {
             // 取消信号必须继续向上传播，否则 finally 里的收尾逻辑会误判为正常结束
             throw e
