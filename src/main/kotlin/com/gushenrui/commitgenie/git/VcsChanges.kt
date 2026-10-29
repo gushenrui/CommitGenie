@@ -13,6 +13,7 @@ import git4idea.history.GitHistoryUtils
 import git4idea.repo.GitRepositoryManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.lang.reflect.Field
 
 /**
  * 从 VCS 读取本次提交涉及的变更与历史提交消息。
@@ -44,6 +45,10 @@ object VcsChanges {
         return changes
     }
 
+    /** 工具栏刷新只判断是否有勾选，避免复制并分类完整变更集合。 */
+    fun hasIncludedChanges(project: Project, workflow: CommitWorkflowUi): Boolean =
+        inclusionOf(project, workflow)?.isNotEmpty() == true
+
     private fun inclusionOf(project: Project, workflow: CommitWorkflowUi): Set<*>? {
         // 这两个 accessor 在 Kotlin 侧都是普通方法而非属性，必须带括号调用
         (workflow as? SingleChangeListCommitWorkflowUi)
@@ -62,19 +67,10 @@ object VcsChanges {
     private fun readHandlerInclusion(project: Project): Set<*>? {
         val manager = ChangesViewWorkflowManager.getInstance(project)
         val handler = manager.commitWorkflowHandler ?: return null
-        // 字段声明在 ChangesViewCommitWorkflowHandler 上，从实际类型一路向上找
-        var type: Class<*>? = handler.javaClass
-        while (type != null) {
-            val field = runCatching { type.getDeclaredField("inclusionModel") }.getOrNull()
-            if (field != null) {
-                field.isAccessible = true
-                val model = field.get(handler) as? InclusionModel ?: return null
-                // 同理，InclusionModel.getInclusion 在 Kotlin 侧是普通方法
-                return model.getInclusion()
-            }
-            type = type.superclass
-        }
-        return null
+        val field = INCLUSION_FIELD[handler.javaClass] ?: return null
+        val model = field.get(handler) as? InclusionModel ?: return null
+        // 同理，InclusionModel.getInclusion 在 Kotlin 侧是普通方法
+        return model.getInclusion()
     }
 
     /**
@@ -107,6 +103,19 @@ object VcsChanges {
     private fun sanitize(message: String): String = message.replace(TRAILER_LINE, "").trimEnd()
 
     private val TRAILER_LINE = Regex("\n(Change-Id: \\w+\\s*|Signed-off-by: .*)$", RegexOption.MULTILINE)
+
+    // 按实际类型缓存字段解析结果，避免工具栏每次刷新都遍历类层次并构造查找异常
+    private val INCLUSION_FIELD = object : ClassValue<Field?>() {
+        override fun computeValue(type: Class<*>): Field? {
+            var current: Class<*>? = type
+            while (current != null) {
+                val field = runCatching { current.getDeclaredField("inclusionModel") }.getOrNull()
+                if (field != null) return field.apply { isAccessible = true }
+                current = current.superclass
+            }
+            return null
+        }
+    }
 
     private val LOG: Logger = Logger.getInstance(VcsChanges::class.java)
 }

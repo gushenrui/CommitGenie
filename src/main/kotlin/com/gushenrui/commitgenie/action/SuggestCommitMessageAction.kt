@@ -58,7 +58,7 @@ class SuggestCommitMessageAction : AnAction() {
             return
         }
 
-        val hasChanges = VcsChanges.includedChanges(project, workflow).isNotEmpty()
+        val hasChanges = VcsChanges.hasIncludedChanges(project, workflow)
         val isAmend = handler.isAmendMode
         val configured = instance.isConfigured
 
