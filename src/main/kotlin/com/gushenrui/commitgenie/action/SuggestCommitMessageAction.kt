@@ -24,7 +24,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -109,15 +109,15 @@ class SuggestCommitMessageAction : AnAction() {
         project.putUserData(KEY, running)
 
         running.job = CommitGenieCoroutineService.getInstance(project).scope.launch {
-            // StateFlow 只保留最新值：模型出字比 EDT 刷新快时，中间状态会被合并而不是堆积
-            val partial = MutableStateFlow("")
+            // 无界通道不阻塞网络读取；渲染结束后正常排空，避免最后一段内容被丢弃
+            val partial = Channel<String>(Channel.UNLIMITED)
             val renderer = launch(Dispatchers.EDT) {
-                partial.collect { text ->
-                    if (text.isEmpty() || project.getUserData(KEY) !== running) return@collect
-                    // 收到首段内容就撤掉遮罩，之后直接在输入框里实时展示
+                for (text in partial) {
+                    if (project.getUserData(KEY) !== running) break
+                    // 首字到达后隐藏遮罩，输入框保持只读直至生成结束
                     if (!running.revealed) {
+                        CommitMessageLoading.reveal(messageUi)
                         running.revealed = true
-                        CommitMessageLoading.stop(messageUi, snapshot)
                     }
                     messageUi.text = text
                 }
@@ -125,21 +125,22 @@ class SuggestCommitMessageAction : AnAction() {
 
             var result: String? = null
             try {
-                result = generate(project, changes) { partial.value = normalize(it).trimStart() }
+                result = generate(project, changes) { partial.trySend(normalize(it).trimStart()) }
             } finally {
-                renderer.cancel()
-                // finally 中不能直接用 withContext：协程已被取消时会立即抛出，界面会卡在加载态
-                val text = result
-                withContext(Dispatchers.EDT + NonCancellable) {
-                    // 已被用户取消或被新任务取代时，界面不再归本任务管
-                    if (project.getUserData(KEY) !== running) return@withContext
-                    project.putUserData(KEY, null)
-                    when {
-                        !text.isNullOrBlank() -> messageUi.text = text
-                        // 生成失败时不留半截内容，还原用户原来的输入
-                        running.revealed -> messageUi.text = snapshot.oldMessage
+                partial.close()
+                withContext(NonCancellable) {
+                    renderer.join()
+                    withContext(Dispatchers.EDT) {
+                        // 已被用户取消或被新任务取代时，界面不再归本任务管
+                        if (project.getUserData(KEY) !== running) return@withContext
+                        project.putUserData(KEY, null)
+                        when {
+                            !result.isNullOrBlank() -> messageUi.text = result
+                            // 生成失败时不留半截内容，还原用户原来的输入
+                            running.revealed -> messageUi.text = snapshot.oldMessage
+                        }
+                        CommitMessageLoading.stop(messageUi, snapshot)
                     }
-                    CommitMessageLoading.stop(messageUi, snapshot)
                 }
             }
         }

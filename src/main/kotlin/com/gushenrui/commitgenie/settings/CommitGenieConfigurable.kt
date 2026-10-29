@@ -12,7 +12,6 @@ import com.intellij.ui.dsl.builder.LabelPosition
 import com.intellij.ui.dsl.builder.bindIntValue
 import com.intellij.ui.dsl.builder.bindSelected
 import com.intellij.ui.dsl.builder.bindText
-import com.intellij.ui.dsl.builder.columns
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.dsl.builder.rows
 import javax.swing.JComponent
@@ -80,30 +79,38 @@ class CommitGenieConfigurable : Configurable {
                         .bindSelected({ includeHistory }, { includeHistory = it })
                 }
             }
-            group("高级") {
-                row {
-                    // 标签放在上方，文本域才能占满整行宽度
-                    textArea()
-                        .label("自定义提示词:", LabelPosition.TOP)
-                        .bindText({ customPrompt }, { customPrompt = it })
-                        .columns(TEXT_AREA_COLUMNS)
-                        .rows(TEXT_AREA_ROWS)
-                        .align(Align.FILL)
-                        .resizableColumn()
-                        .applyToComponent {
-                            emptyText.text = "留空使用内置提示词，可点击下方「填入示例」参考写法"
+            // 外层行撑满剩余空间，内部分组才能继续分配宽高
+            row {
+                panel {
+                    group("高级") {
+                        row {
+                            // 标签放在上方，文本域才能占满整行宽度
+                            textArea()
+                                .label("自定义提示词:", LabelPosition.TOP)
+                                .bindText({ customPrompt }, { customPrompt = it })
+                                .rows(TEXT_AREA_ROWS)
+                                .align(Align.FILL)
+                                .resizableColumn()
+                                .applyToComponent {
+                                    emptyText.text =
+                                        "留空使用内置提示词，可点击下方「填入示例」参考写法"
+                                }
+                                .also { promptField = it }
+                        }.resizableRow()
+                        row {
+                            link("填入示例") { fillExamplePrompt() }
                         }
-                        .also { promptField = it }
-                }.resizableRow()
-                row {
-                    link("填入示例") { fillExamplePrompt() }
-                    comment(
-                        "${PromptBuilder.MACRO_SAMPLES}：替换为采样的历史提交；" +
-                                "${PromptBuilder.MACRO_DIFF}：替换为本次勾选变更的 diff。" +
-                                "自定义提示词生效时，「输出语言」设置不再自动追加，请在提示词中自行说明。"
-                    )
-                }
-            }
+                        // 备注独占一行，默认按可用宽度自动换行
+                        row {
+                            comment(
+                                "${PromptBuilder.MACRO_SAMPLES}：替换为采样的历史提交；" +
+                                        "${PromptBuilder.MACRO_DIFF}：替换为本次勾选变更的 diff。" +
+                                        "自定义提示词生效时，「输出语言」设置不再自动追加，请在提示词中自行说明。"
+                            ).resizableColumn()
+                        }
+                    }
+                }.align(Align.FILL)
+            }.resizableRow()
         }
         ui = target
         reset()
@@ -171,8 +178,7 @@ class CommitGenieConfigurable : Configurable {
         val SAMPLE_COUNT_RANGE = 0..50
         val MAX_DIFF_RANGE = 1_000..500_000
 
-        // 文本域默认只有 18 列，放宽首选宽度后再由 Align.FILL 撑满
-        const val TEXT_AREA_COLUMNS = 80
+        // 保持默认列宽，宽度和高度由可伸缩布局随窗口分配
         const val TEXT_AREA_ROWS = 12
 
         val EXAMPLE_PROMPT = """
