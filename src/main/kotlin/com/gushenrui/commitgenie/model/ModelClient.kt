@@ -1,5 +1,8 @@
 package com.gushenrui.commitgenie.model
 
+import com.google.gson.Gson
+import com.google.gson.GsonBuilder
+import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -133,45 +136,23 @@ class ModelClient(
         ModelProtocol.ANTHROPIC -> baseUrl.trimEnd('/') + "/messages"
     }
 
-    private fun requestBody(prompt: String): String = when (protocol) {
-        ModelProtocol.OPENAI ->
-            """{"model":${quote(model)},"stream":true,"temperature":1,""" +
-                    """"messages":[{"role":"user","content":${quote(prompt)}}]}"""
-
-        ModelProtocol.ANTHROPIC ->
-            """{"model":${quote(model)},"stream":true,"max_tokens":$MAX_OUTPUT_TOKENS,""" +
-                    """"messages":[{"role":"user","content":${quote(prompt)}}]}"""
-    }
-
-    /** 最小化的 JSON 转义，避免为大请求引入额外对象图。 */
-    private fun quote(value: String): String = buildString(value.length + 2) {
-        append('"')
-        var i = 0
-        while (i < value.length) {
-            val ch = value[i]
-            when {
-                ch == '"' -> append("\\\"")
-                ch == '\\' -> append("\\\\")
-                ch == '\n' -> append("\\n")
-                ch == '\r' -> append("\\r")
-                ch == '\t' -> append("\\t")
-                ch == '\b' -> append("\\b")
-                ch == '\u000C' -> append("\\f")
-                // 完整的代理对原样输出；孤立代理项替换为替代字符，
-                // 否则编码不出合法 UTF-8，服务端会因 JSON 解析失败返回 400
-                Character.isHighSurrogate(ch) &&
-                        i + 1 < value.length && Character.isLowSurrogate(value[i + 1]) -> {
-                    append(ch).append(value[i + 1])
-                    i++
-                }
-
-                Character.isSurrogate(ch) -> append('�')
-                ch < ' ' -> append("\\u%04x".format(ch.code))
-                else -> append(ch)
+    private fun requestBody(prompt: String): String {
+        val root = JsonObject().apply {
+            addProperty("model", model)
+            addProperty("stream", true)
+            if (protocol == ModelProtocol.OPENAI) {
+                addProperty("temperature", 1)
+            } else {
+                addProperty("max_tokens", MAX_OUTPUT_TOKENS)
             }
-            i++
+            add("messages", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("role", "user")
+                    addProperty("content", prompt)
+                })
+            })
         }
-        append('"')
+        return GSON.toJson(root)
     }
 
     /** 解析所选协议的响应行并累积正文，同时兼容部分网关直接返回的整段 JSON。 */
@@ -251,6 +232,9 @@ class ModelClient(
             "max_tokens", "exceeds", "payload", "request entity",
         )
         private val STATUS_PATTERN = Regex("""response code:?\s*(\d{3})""", RegexOption.IGNORE_CASE)
+
+        // diff 里常见 <、>、&，关闭 HTML 转义以免无谓膨胀请求体
+        private val GSON: Gson = GsonBuilder().disableHtmlEscaping().create()
 
         private val LOG = Logger.getInstance(ModelClient::class.java)
     }
