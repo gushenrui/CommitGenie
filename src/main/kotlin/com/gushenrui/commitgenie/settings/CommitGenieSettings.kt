@@ -1,5 +1,6 @@
 package com.gushenrui.commitgenie.settings
 
+import com.gushenrui.commitgenie.model.ModelProtocol
 import com.intellij.credentialStore.CredentialAttributes
 import com.intellij.credentialStore.Credentials
 import com.intellij.ide.passwordSafe.PasswordSafe
@@ -20,6 +21,7 @@ class CommitGenieSettings : PersistentStateComponent<CommitGenieSettings.State> 
     data class State(
         var baseUrl: String = DEFAULT_BASE_URL,
         var model: String = DEFAULT_MODEL,
+        var protocol: ModelProtocol = ModelProtocol.OPENAI,
         var sampleCommitCount: Int = DEFAULT_SAMPLE_COUNT,
         var maxDiffChars: Int = DEFAULT_MAX_DIFF_CHARS,
         var includeHistory: Boolean = true,

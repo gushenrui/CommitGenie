@@ -1,5 +1,7 @@
 package com.gushenrui.commitgenie.model
 
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProgressIndicator
@@ -16,14 +18,15 @@ import java.net.HttpURLConnection
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * 调用 OpenAI 兼容的 `/chat/completions` 接口。
+ * 调用模型网关的聊天接口。
  *
  * 使用流式响应，逐块回调已累积的文本，便于界面实时展示生成进度。
  */
-class OpenAiClient(
+class ModelClient(
     private val baseUrl: String,
     private val apiKey: String,
     private val model: String,
+    private val protocol: ModelProtocol,
     private val timeoutMs: Int = DEFAULT_TIMEOUT_MS,
 ) {
 
@@ -38,7 +41,7 @@ class OpenAiClient(
     ): String = withContext(Dispatchers.IO) {
         // connect 的回调不是挂起函数，先取出上下文供循环内检查取消
         val context = currentCoroutineContext()
-        val sink = StreamingCollector()
+        val sink = StreamingCollector(protocol)
         val body = requestBody(prompt)
         // readLine 阻塞时感知不到协程取消。子协程在取消时断开连接，让阻塞的读取立即抛出
         val activeConnection = AtomicReference<HttpURLConnection?>()
@@ -55,7 +58,13 @@ class OpenAiClient(
             HttpRequests.post(endpoint(), "application/json")
                 .tuner { connection ->
                     connection.setRequestProperty("Authorization", "Bearer $apiKey")
+                    if (protocol == ModelProtocol.ANTHROPIC) {
+                        connection.setRequestProperty("x-api-key", apiKey)
+                        connection.setRequestProperty("anthropic-version", ANTHROPIC_VERSION)
+                    }
                     connection.setRequestProperty("Accept", "text/event-stream")
+                    // Java 默认请求 gzip；部分网关会缓冲压缩后的 SSE，直到完成才一次性返回
+                    connection.setRequestProperty("Accept-Encoding", "identity")
                 }
                 .connectTimeout(timeoutMs)
                 .readTimeout(timeoutMs)
@@ -82,8 +91,8 @@ class OpenAiClient(
         } catch (e: HttpRequests.HttpStatusException) {
             LOG.warn(
                 "请求失败 status=${e.statusCode} endpoint=${endpoint()} " +
-                    "model=${model.trim()} bodyLen=${prompt.length} " +
-                    "detail=${e.message.orEmpty().take(500)}",
+                        "model=${model.trim()} bodyLen=${prompt.length} " +
+                        "detail=${e.message.orEmpty().take(500)}",
                 e,
             )
             val detail = e.message.orEmpty()
@@ -97,7 +106,7 @@ class OpenAiClient(
             // 部分网关不触发 HttpStatusException，错误会以普通 IOException 抛出
             LOG.warn(
                 "请求异常 type=${e.javaClass.name} endpoint=${endpoint()} " +
-                    "model=${model.trim()} bodyLen=${prompt.length} msg=${e.message}",
+                        "model=${model.trim()} bodyLen=${prompt.length} msg=${e.message}",
                 e,
             )
             if (isPayloadTooLarge(extractStatusCode(e.message), e.message.orEmpty())) {
@@ -125,11 +134,20 @@ class OpenAiClient(
     /** 请求体超出模型上下文或服务端限制。 */
     class PayloadTooLargeException(message: String, cause: Throwable) : IOException(message, cause)
 
-    private fun endpoint(): String = baseUrl.trimEnd('/') + "/chat/completions"
+    private fun endpoint(): String = when (protocol) {
+        ModelProtocol.OPENAI -> baseUrl.trimEnd('/') + "/chat/completions"
+        ModelProtocol.ANTHROPIC -> baseUrl.trimEnd('/') + "/messages"
+    }
 
-    private fun requestBody(prompt: String): String =
-        """{"model":${quote(model)},"stream":true,"temperature":1,""" +
-                """"messages":[{"role":"user","content":${quote(prompt)}}]}"""
+    private fun requestBody(prompt: String): String = when (protocol) {
+        ModelProtocol.OPENAI ->
+            """{"model":${quote(model)},"stream":true,"temperature":1,""" +
+                    """"messages":[{"role":"user","content":${quote(prompt)}}]}"""
+
+        ModelProtocol.ANTHROPIC ->
+            """{"model":${quote(model)},"stream":true,"max_tokens":$MAX_OUTPUT_TOKENS,""" +
+                    """"messages":[{"role":"user","content":${quote(prompt)}}]}"""
+    }
 
     /** 最小化的 JSON 转义，避免为大请求引入额外对象图。 */
     private fun quote(value: String): String = buildString(value.length + 2) {
@@ -148,10 +166,11 @@ class OpenAiClient(
                 // 完整的代理对原样输出；孤立代理项替换为替代字符，
                 // 否则编码不出合法 UTF-8，服务端会因 JSON 解析失败返回 400
                 Character.isHighSurrogate(ch) &&
-                    i + 1 < value.length && Character.isLowSurrogate(value[i + 1]) -> {
+                        i + 1 < value.length && Character.isLowSurrogate(value[i + 1]) -> {
                     append(ch).append(value[i + 1])
                     i++
                 }
+
                 Character.isSurrogate(ch) -> append('�')
                 ch < ' ' -> append("\\u%04x".format(ch.code))
                 else -> append(ch)
@@ -161,12 +180,8 @@ class OpenAiClient(
         append('"')
     }
 
-    /**
-     * 解析 SSE 数据行并累积正文。
-     *
-     * 兼容两种常见返回：标准 `data:` 事件流与部分网关直接返回的整段 JSON。
-     */
-    private class StreamingCollector {
+    /** 解析所选协议的响应行并累积正文，同时兼容部分网关直接返回的整段 JSON。 */
+    private class StreamingCollector(private val protocol: ModelProtocol) {
         private val buffer = StringBuilder()
 
         val text: String get() = buffer.toString()
@@ -175,14 +190,13 @@ class OpenAiClient(
         fun consume(rawLine: String): Boolean {
             val line = rawLine.trim()
             if (line.isEmpty()) return false
-            return when {
-                line.startsWith("data:") -> {
-                    val payload = line.removePrefix("data:").trim()
-                    payload != DONE && appendDelta(payload)
-                }
-                line.startsWith("{") -> appendDelta(line)
-                else -> false
+            val payload = when {
+                line.startsWith("data:") -> line.removePrefix("data:").trim()
+                line.startsWith("{") -> line
+                else -> return false
             }
+            if (payload == DONE) return false
+            return appendDelta(payload)
         }
 
         private fun appendDelta(json: String): Boolean {
@@ -194,6 +208,13 @@ class OpenAiClient(
 
         private fun extractContent(json: String): String? {
             val root = JsonParser.parseString(json).asJsonObject
+            return when (protocol) {
+                ModelProtocol.OPENAI -> extractOpenAiContent(root)
+                ModelProtocol.ANTHROPIC -> extractAnthropicContent(root)
+            }
+        }
+
+        private fun extractOpenAiContent(root: JsonObject): String? {
             val choices = root.getAsJsonArray("choices")
             if (choices == null || choices.size() == 0) return null
             val first = choices[0].asJsonObject
@@ -201,13 +222,34 @@ class OpenAiClient(
                 ?: first.getAsJsonObject("message")?.contentOrNull()
         }
 
-        private fun com.google.gson.JsonObject.contentOrNull(): String? =
-            get("content")?.takeIf { it.isJsonPrimitive }?.asString
+        private fun extractAnthropicContent(root: JsonObject): String? {
+            val delta = root.getAsJsonObject("delta")
+            if (delta != null) {
+                if (delta.get("type")
+                        ?.takeIf(JsonElement::isJsonPrimitive)?.asString != "text_delta"
+                ) {
+                    return null
+                }
+                return delta.textOrNull()
+            }
+            return root.getAsJsonArray("content")
+                ?.firstOrNull()
+                ?.asJsonObject
+                ?.textOrNull()
+        }
+
+        private fun JsonObject.contentOrNull(): String? =
+            get("content")?.takeIf(JsonElement::isJsonPrimitive)?.asString
+
+        private fun JsonObject.textOrNull(): String? =
+            get("text")?.takeIf(JsonElement::isJsonPrimitive)?.asString
     }
 
     companion object {
         private const val DEFAULT_TIMEOUT_MS = 120_000
         private const val DONE = "[DONE]"
+        private const val ANTHROPIC_VERSION = "2023-06-01"
+        private const val MAX_OUTPUT_TOKENS = 1_024
 
         /** 响应文案里暗示「内容过大」的关键词，用于把 400 细化成更明确的提示。 */
         private val OVERSIZE_HINTS = listOf(
@@ -216,6 +258,6 @@ class OpenAiClient(
         )
         private val STATUS_PATTERN = Regex("""response code:?\s*(\d{3})""", RegexOption.IGNORE_CASE)
 
-        private val LOG = Logger.getInstance(OpenAiClient::class.java)
+        private val LOG = Logger.getInstance(ModelClient::class.java)
     }
 }

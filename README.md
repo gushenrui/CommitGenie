@@ -3,8 +3,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 为 Android Studio / IntelliJ IDEA 提供 AI 生成 Git 提交信息的能力，复刻 Android Studio 内置 Gemini
-插件「Suggest commit message」的交互与提示词，但 **完全独立**：不依赖 Gemini 插件，可自由接入任意 OpenAI
-兼容接口。
+插件「Suggest commit message」的交互与提示词，但 **完全独立**：不依赖 Gemini 插件，可自由接入 OpenAI 或
+Anthropic 兼容接口。
 
 在提交面板的消息输入框工具栏点击按钮，或按 `⌃\`（macOS），即可根据 **当前勾选的变更**生成提交信息，生成过程中可随时取消。
 
@@ -28,7 +28,7 @@
 | IDE      | Android Studio 2026.2.1（build 262），`since-build=262` / `until-build=262.*` |
 | VCS      | Git（依赖 `Git4Idea` 插件，随 IDE 内置）                                      |
 | 系统     | macOS（安装脚本按 `/Applications/Android Studio.app` 定位 IDE）               |
-| 模型接口 | 任意 OpenAI 兼容的 `/chat/completions` 接口                                   |
+| 模型接口 | OpenAI 兼容的 `/chat/completions` 或 Anthropic 兼容的 `/messages` 接口        |
 
 ## 安装
 
@@ -53,7 +53,8 @@
 
 | 配置项                       | 默认值                      | 说明                                                       |
 |------------------------------|-----------------------------|------------------------------------------------------------|
-| Base URL                     | `https://api.openai.com/v1` | 需包含版本路径；插件会拼接 `/chat/completions`             |
+| Base URL                     | `https://api.openai.com/v1` | 需包含版本路径；插件会拼接所选协议的接口路径               |
+| 接口协议                     | OpenAI                      | OpenAI 或 Anthropic；需与网关实际接口匹配                  |
 | Model                        | `gpt-4o-mini`               | 例如 `deepseek-chat`、`qwen-plus` 等                       |
 | API Key                      | 空                          | 保存在系统钥匙串                                           |
 | 输出语言                     | `Auto`                      | 填 `Auto` 跟随历史提交语言，也可填 `Chinese`、`English` 等 |
@@ -101,7 +102,7 @@
 src/main/kotlin/com/gushenrui/commitgenie/
 ├── action/     # Action、协程服务、加载态、通知、图标
 ├── git/        # 勾选变更读取、diff 构建、历史提交采样
-├── model/      # OpenAI 兼容客户端（SSE 流式）
+├── model/      # OpenAI / Anthropic 客户端（SSE 流式）
 ├── prompt/     # 提示词组装
 └── settings/   # 配置持久化与设置页
 ```

@@ -2,7 +2,7 @@ package com.gushenrui.commitgenie.action
 
 import com.gushenrui.commitgenie.git.DiffBuilder
 import com.gushenrui.commitgenie.git.VcsChanges
-import com.gushenrui.commitgenie.model.OpenAiClient
+import com.gushenrui.commitgenie.model.ModelClient
 import com.gushenrui.commitgenie.prompt.PromptBuilder
 import com.gushenrui.commitgenie.settings.CommitGenieSettings.Companion.instance
 import com.intellij.ide.HelpTooltip
@@ -165,10 +165,11 @@ class SuggestCommitMessageAction : AnAction() {
         }
 
         val prompt = PromptBuilder.build(samples, diff, settings.state)
-        val client = OpenAiClient(
+        val client = ModelClient(
             baseUrl = settings.state.baseUrl,
             apiKey = settings.apiKey,
             model = settings.state.model,
+            protocol = settings.state.protocol,
         )
 
         return try {
@@ -176,7 +177,7 @@ class SuggestCommitMessageAction : AnAction() {
         } catch (e: CancellationException) {
             // 取消信号必须继续向上传播，否则 finally 里的收尾逻辑会误判为正常结束
             throw e
-        } catch (e: OpenAiClient.PayloadTooLargeException) {
+        } catch (e: ModelClient.PayloadTooLargeException) {
             LOG.warn("变更过大，模型无法处理", e)
             Notifications.warn(
                 project,

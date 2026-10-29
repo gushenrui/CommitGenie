@@ -1,5 +1,6 @@
 package com.gushenrui.commitgenie.settings
 
+import com.gushenrui.commitgenie.model.ModelProtocol
 import com.gushenrui.commitgenie.prompt.PromptBuilder
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.DialogPanel
@@ -10,6 +11,7 @@ import com.intellij.ui.dsl.builder.Align
 import com.intellij.ui.dsl.builder.Cell
 import com.intellij.ui.dsl.builder.LabelPosition
 import com.intellij.ui.dsl.builder.bindIntValue
+import com.intellij.ui.dsl.builder.bindItem
 import com.intellij.ui.dsl.builder.bindSelected
 import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.panel
@@ -27,6 +29,7 @@ class CommitGenieConfigurable : Configurable {
 
     private var baseUrl = ""
     private var model = ""
+    private var protocol = ModelProtocol.OPENAI
     private var sampleCommitCount = 0
     private var maxDiffChars = 0
     private var includeHistory = true
@@ -43,6 +46,11 @@ class CommitGenieConfigurable : Configurable {
                         .bindText({ baseUrl }, { baseUrl = it })
                         .resizableColumn()
                         .comment("需包含版本路径，例如 https://api.openai.com/v1")
+                }
+                row("接口协议:") {
+                    comboBox(ModelProtocol.entries.toList())
+                        .bindItem({ protocol }, { protocol = it ?: ModelProtocol.OPENAI })
+                        .comment("当前网关的 /messages 接口支持实时流式输出时，选择 Anthropic")
                 }
                 row("Model:") {
                     textField()
@@ -127,6 +135,7 @@ class CommitGenieConfigurable : Configurable {
         val settings = CommitGenieSettings.instance
         settings.state.baseUrl = baseUrl.trim().ifEmpty { CommitGenieSettings.DEFAULT_BASE_URL }
         settings.state.model = model.trim().ifEmpty { CommitGenieSettings.DEFAULT_MODEL }
+        settings.state.protocol = protocol
         settings.state.sampleCommitCount = sampleCommitCount
         settings.state.maxDiffChars = maxDiffChars
         settings.state.includeHistory = includeHistory
@@ -140,6 +149,7 @@ class CommitGenieConfigurable : Configurable {
         val state = settings.state
         baseUrl = state.baseUrl
         model = state.model
+        protocol = state.protocol
         sampleCommitCount = state.sampleCommitCount
         maxDiffChars = state.maxDiffChars
         includeHistory = state.includeHistory
