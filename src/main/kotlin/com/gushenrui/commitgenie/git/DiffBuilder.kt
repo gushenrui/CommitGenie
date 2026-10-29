@@ -42,7 +42,7 @@ object DiffBuilder {
                 }
                 try {
                     builder.buildPatches(baseDir, listOf(change), false, true)
-                        .forEach { patch -> render(project, baseDir, patch, out) }
+                        .forEach { patch -> render(baseDir, patch, out) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -73,7 +73,6 @@ object DiffBuilder {
     }
 
     private fun render(
-        project: Project,
         baseDir: java.nio.file.Path,
         patch: FilePatch,
         out: LimitedText
@@ -82,20 +81,19 @@ object DiffBuilder {
         patch.beforeVersionId = null
         patch.afterVersionId = null
         when (patch) {
-            is TextFilePatch -> renderTextPatch(project, baseDir, patch, out)
+            is TextFilePatch -> renderTextPatch(baseDir, patch, out)
             is BinaryFilePatch -> renderBinaryPatch(baseDir, patch, out)
         }
     }
 
     private fun renderTextPatch(
-        project: Project,
         baseDir: java.nio.file.Path,
         patch: TextFilePatch,
         out: LimitedText,
     ) {
         // 新增/删除文件只有一侧有名字，diff --git 行两侧都用已知的那个
-        val beforePath = relativePath(project, baseDir, patch.beforeName ?: patch.afterName)
-        val afterPath = relativePath(project, baseDir, patch.afterName ?: patch.beforeName)
+        val beforePath = relativePath(baseDir, patch.beforeName ?: patch.afterName)
+        val afterPath = relativePath(baseDir, patch.afterName ?: patch.beforeName)
         val fileHeader = buildString {
             append("diff --git a/").append(beforePath).append(" b/").append(afterPath).append('\n')
             append("--- ").append(if (patch.isNewFile) DEV_NULL else "a/$beforePath").append('\n')
@@ -150,14 +148,17 @@ object DiffBuilder {
     private fun range(start: Int, end: Int): String =
         if (start == end) "$start,0" else "${start + 1},${end - start}"
 
-    private fun relativePath(project: Project, baseDir: java.nio.file.Path, name: String?): String {
+    /**
+     * 把 patch 中的文件名换算成相对 [baseDir] 的路径。
+     *
+     * patch 由 [baseDir] 构建，相对路径也应以它为基准解析；若改用 project.basePath，
+     * 当勾选的变更只在某个模块或子目录内时，diff 里的 a/、b/ 路径会多出或缺少前缀。
+     */
+    private fun relativePath(baseDir: java.nio.file.Path, name: String?): String {
         val path = name ?: return ""
         return runCatching {
-            val absolute = if (java.nio.file.Paths.get(path).isAbsolute) {
-                java.nio.file.Paths.get(path)
-            } else {
-                (project.basePath?.let { java.nio.file.Paths.get(it) } ?: baseDir).resolve(path)
-            }
+            val source = java.nio.file.Paths.get(path)
+            val absolute = if (source.isAbsolute) source else baseDir.resolve(source)
             baseDir.relativize(absolute).toString().replace('\\', '/')
         }.getOrDefault(path.replace('\\', '/'))
     }
