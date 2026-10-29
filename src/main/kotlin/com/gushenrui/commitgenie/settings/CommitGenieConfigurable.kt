@@ -1,15 +1,20 @@
 package com.gushenrui.commitgenie.settings
 
+import com.gushenrui.commitgenie.prompt.PromptBuilder
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.DialogPanel
+import com.intellij.openapi.ui.Messages
 import com.intellij.ui.components.JBPasswordField
+import com.intellij.ui.components.JBTextArea
+import com.intellij.ui.dsl.builder.Align
 import com.intellij.ui.dsl.builder.Cell
+import com.intellij.ui.dsl.builder.LabelPosition
 import com.intellij.ui.dsl.builder.bindIntValue
 import com.intellij.ui.dsl.builder.bindSelected
 import com.intellij.ui.dsl.builder.bindText
+import com.intellij.ui.dsl.builder.columns
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.dsl.builder.rows
-import com.gushenrui.commitgenie.prompt.PromptBuilder
 import javax.swing.JComponent
 
 /**
@@ -19,6 +24,7 @@ class CommitGenieConfigurable : Configurable {
 
     private var ui: DialogPanel? = null
     private var apiKeyField: Cell<JBPasswordField>? = null
+    private var promptField: Cell<JBTextArea>? = null
 
     private var baseUrl = ""
     private var model = ""
@@ -75,15 +81,27 @@ class CommitGenieConfigurable : Configurable {
                 }
             }
             group("高级") {
-                row("自定义提示词:") {
+                row {
+                    // 标签放在上方，文本域才能占满整行宽度
                     textArea()
+                        .label("自定义提示词:", LabelPosition.TOP)
                         .bindText({ customPrompt }, { customPrompt = it })
+                        .columns(TEXT_AREA_COLUMNS)
                         .rows(TEXT_AREA_ROWS)
+                        .align(Align.FILL)
                         .resizableColumn()
-                        .comment(
-                            "留空使用内置提示词。可用 ${PromptBuilder.MACRO_SAMPLES} 与 " +
-                                "${PromptBuilder.MACRO_DIFF} 作为占位符"
-                        )
+                        .applyToComponent {
+                            emptyText.text = "留空使用内置提示词，可点击下方「填入示例」参考写法"
+                        }
+                        .also { promptField = it }
+                }.resizableRow()
+                row {
+                    link("填入示例") { fillExamplePrompt() }
+                    comment(
+                        "${PromptBuilder.MACRO_SAMPLES}：替换为采样的历史提交；" +
+                                "${PromptBuilder.MACRO_DIFF}：替换为本次勾选变更的 diff。" +
+                                "自定义提示词生效时，「输出语言」设置不再自动追加，请在提示词中自行说明。"
+                    )
                 }
             }
         }
@@ -127,6 +145,23 @@ class CommitGenieConfigurable : Configurable {
     override fun disposeUIResources() {
         ui = null
         apiKeyField = null
+        promptField = null
+    }
+
+    /** 已有内容时先确认，避免误覆盖用户写好的提示词。 */
+    private fun fillExamplePrompt() {
+        val area = promptField?.component ?: return
+        if (area.text.isNotBlank()) {
+            val answer = Messages.showYesNoDialog(
+                area,
+                "当前自定义提示词将被示例覆盖，是否继续？",
+                "填入示例",
+                null,
+            )
+            if (answer != Messages.YES) return
+        }
+        area.text = EXAMPLE_PROMPT
+        area.caretPosition = 0
     }
 
     private fun currentApiKey(): String =
@@ -135,6 +170,24 @@ class CommitGenieConfigurable : Configurable {
     private companion object {
         val SAMPLE_COUNT_RANGE = 0..50
         val MAX_DIFF_RANGE = 1_000..500_000
-        const val TEXT_AREA_ROWS = 7
+
+        // 文本域默认只有 18 列，放宽首选宽度后再由 Align.FILL 撑满
+        const val TEXT_AREA_COLUMNS = 80
+        const val TEXT_AREA_ROWS = 12
+
+        val EXAMPLE_PROMPT = """
+            |你是一名资深软件工程师，请根据下面的 diff 生成一条简洁的 Git 提交信息。
+            |要求：
+            |1. 使用中文，遵循 Conventional Commits 格式：type(scope): subject
+            |2. 标题不超过 50 个字符；必要时空一行，再用正文说明改动原因
+            |3. 只描述 diff 中真实存在的改动，不要编造工单号、人名或邮箱
+            |4. 只输出提交信息本身，不要附加任何解释
+            |
+            |参考以下历史提交的风格：
+            |${PromptBuilder.MACRO_SAMPLES}
+            |
+            |本次改动的 diff：
+            |${PromptBuilder.MACRO_DIFF}
+        """.trimMargin()
     }
 }
