@@ -18,16 +18,22 @@ internal object CommitMessageLoading {
 
     private const val LOADING_TEXT = "Generating commit message"
 
-    /** 记录进入加载态前的文案，退出时还原。 */
-    class Snapshot(val oldLoadingText: String)
+    /**
+     * 记录进入加载态前的状态。
+     *
+     * @property oldLoadingText 退出加载态时还原的遮罩文案
+     * @property oldMessage 流式写入会覆盖输入框，取消或失败时用它还原
+     */
+    class Snapshot(val oldLoadingText: String, val oldMessage: String)
 
     fun start(ui: CommitMessageUi): Snapshot {
+        val oldMessage = ui.text
         editorField(ui)?.isVisible = false
         ui.startLoading()
         val panel = loadingPanel(ui)
         val oldText = panel?.getLoadingText().orEmpty()
         panel?.setLoadingText(LOADING_TEXT)
-        return Snapshot(oldText)
+        return Snapshot(oldText, oldMessage)
     }
 
     fun stop(ui: CommitMessageUi, snapshot: Snapshot) {

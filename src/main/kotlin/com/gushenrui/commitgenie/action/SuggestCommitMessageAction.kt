@@ -24,6 +24,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -83,6 +84,9 @@ class SuggestCommitMessageAction : AnAction() {
         project.getUserData(KEY)?.let { running ->
             project.putUserData(KEY, null)
             running.job?.cancel()
+            if (running.revealed) {
+                messageUi.text = running.snapshot.oldMessage
+            }
             CommitMessageLoading.stop(messageUi, running.snapshot)
             return
         }
@@ -105,18 +109,35 @@ class SuggestCommitMessageAction : AnAction() {
         project.putUserData(KEY, running)
 
         running.job = CommitGenieCoroutineService.getInstance(project).scope.launch {
+            // StateFlow 只保留最新值：模型出字比 EDT 刷新快时，中间状态会被合并而不是堆积
+            val partial = MutableStateFlow("")
+            val renderer = launch(Dispatchers.EDT) {
+                partial.collect { text ->
+                    if (text.isEmpty() || project.getUserData(KEY) !== running) return@collect
+                    // 收到首段内容就撤掉遮罩，之后直接在输入框里实时展示
+                    if (!running.revealed) {
+                        running.revealed = true
+                        CommitMessageLoading.stop(messageUi, snapshot)
+                    }
+                    messageUi.text = text
+                }
+            }
+
             var result: String? = null
             try {
-                result = generate(project, changes)
+                result = generate(project, changes) { partial.value = normalize(it).trimStart() }
             } finally {
+                renderer.cancel()
                 // finally 中不能直接用 withContext：协程已被取消时会立即抛出，界面会卡在加载态
                 val text = result
                 withContext(Dispatchers.EDT + NonCancellable) {
                     // 已被用户取消或被新任务取代时，界面不再归本任务管
                     if (project.getUserData(KEY) !== running) return@withContext
                     project.putUserData(KEY, null)
-                    if (!text.isNullOrBlank()) {
-                        messageUi.text = text
+                    when {
+                        !text.isNullOrBlank() -> messageUi.text = text
+                        // 生成失败时不留半截内容，还原用户原来的输入
+                        running.revealed -> messageUi.text = snapshot.oldMessage
                     }
                     CommitMessageLoading.stop(messageUi, snapshot)
                 }
@@ -124,7 +145,11 @@ class SuggestCommitMessageAction : AnAction() {
         }
     }
 
-    private suspend fun generate(project: Project, changes: List<Change>): String? {
+    private suspend fun generate(
+        project: Project,
+        changes: List<Change>,
+        onDelta: (String) -> Unit,
+    ): String? {
         val settings = instance
         val diff = DiffBuilder.buildDiff(project, changes, settings.state.maxDiffChars)
         if (diff.isBlank()) {
@@ -146,7 +171,7 @@ class SuggestCommitMessageAction : AnAction() {
         )
 
         return try {
-            client.generate(prompt, indicator = null).trim().replace("\r\n", "\n")
+            normalize(client.generate(prompt, indicator = null, onDelta)).trim()
         } catch (e: CancellationException) {
             // 取消信号必须继续向上传播，否则 finally 里的收尾逻辑会误判为正常结束
             throw e
@@ -168,10 +193,15 @@ class SuggestCommitMessageAction : AnAction() {
         }
     }
 
+    private fun normalize(text: String): String = text.replace("\r\n", "\n")
+
     /** 占位对象，job 在启动后回填，保证「运行中」状态没有竞态窗口。 */
     private class RunningJob(val snapshot: CommitMessageLoading.Snapshot) {
         @Volatile
         var job: Job? = null
+
+        /** 是否已开始流式写入输入框；只在 EDT 上读写。 */
+        var revealed = false
     }
 
     /**
