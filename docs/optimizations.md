@@ -16,7 +16,7 @@
 | 11   | 手写 JSON 拼接请求体                     | 可维护性      | 中     | 已处理 |
 | 12   | `relativePath` 的相对路径基准不一致      | 正确性        | 中     | 已处理 |
 | 13   | Action 直接依赖 Project 级协程服务       | 可测试性      | 低     | 已处理 |
-| 14   | 未读取错误响应体，400 细分判断失效       | 正确性 / 诊断 | 高     | 待处理 |
+| 14   | 未读取错误响应体，400 细分判断失效       | 正确性 / 诊断 | 高     | 已处理 |
 | 15   | `temperature` 硬编码为 1                 | 可配置性      | 低     | 待处理 |
 | 16   | 模型输出未清理代码围栏与思考标签         | 健壮性        | 中     | 待处理 |
 
@@ -211,6 +211,26 @@ Action 侧删除了自带的 `generate()`，只负责读取勾选、占位取消
 - 响应体可能很长或含 HTML，写日志与提示前统一截断（例如 500 字符），并优先提取 JSON
   里的 `error.message` 字段；
 - 判断顺序调整为先解析 body 再匹配关键词，避免把「鉴权失败」误判为内容超限。
+
+**处理结果**：最初按建议补了 `.isReadResponseOnError(true)`，实现时发现它在本项目里 **不生效**：
+平台的 `doProcess` 只在 `connect` 回调 **正常返回后**才检查状态码，而回调内部读取
+`request.reader` 时，4xx 会先抛普通 `IOException`、响应体随之丢失，异常退出时那段检查根本
+走不到。后来再次确认：回调抛异常后平台 `doProcess` 会先 `request.close()` 并断开连接，
+异常分支里再读 `errorStream` 也只能得到空串。
+
+因此最终方案是 **只保留一条路径**：在回调内 `request.write(body)` 之后先读 `responseCode`，
+非 2xx 时立即读 `errorStream` 并抛出内部 `HttpErrorException`，把状态码与 body 一起带回。
+`.isReadResponseOnError(true)` 已删除，避免留下无效配置。错误流绕过平台的解压逻辑，读取时按
+`Content-Encoding` 自行处理 gzip，并按 `Content-Type` 的 charset 解码，长度上限 8 KB。
+
+错误摘要统一由 `errorDetail()` 处理：优先取 `{"error":{"message":...}}` 或
+`{"message":...}`（会跳过前置 BOM/日志前缀），解析不出再退回原文；折叠空白后截断到 500
+字符（截断点避开代理对）。`isPayloadTooLarge()` 只在 413、400 与流内错误（状态码 -1）上
+判断，401/403 等鉴权失败不参与关键词匹配，避免误报为内容超限；`OVERSIZE_HINTS` 也去掉了
+`max_tokens` 这类会把参数校验错误误判进来的关键词。3xx 单独提示「请检查 Base URL」。
+
+日志按类型分流：已识别的 HTTP 状态异常只记摘要（`HttpStatusException.toString()` 会把整段
+body 带进堆栈），其余意外异常保留堆栈。超时场景不再探测状态码，防止再等一个读超时。
 
 ---
 
