@@ -3,6 +3,7 @@ package com.gushenrui.commitgenie.action
 import com.gushenrui.commitgenie.git.DiffBuilder
 import com.gushenrui.commitgenie.git.VcsChanges
 import com.gushenrui.commitgenie.model.ModelClient
+import com.gushenrui.commitgenie.model.ModelOutputCleaner
 import com.gushenrui.commitgenie.prompt.PromptBuilder
 import com.gushenrui.commitgenie.settings.CommitGenieSettings
 import com.intellij.openapi.components.Service
@@ -86,10 +87,13 @@ class CommitMessageGenerator(
                 protocol = settings.state.protocol,
             )
 
-            // 增量回调提前统一换行并去掉开头的空行，避免输入框先闪出空白
-            val text = normalize(
-                client.generate(prompt) { raw -> onDelta(normalize(raw).trimStart()) }
-            ).trim()
+            // 增量回调提前统一换行并去掉开头的空行，避免输入框先闪出空白；
+            // 最终结果再清理围栏、思考区块与前置引导语，避免污染提交信息
+            val text = ModelOutputCleaner.clean(
+                normalize(
+                    client.generate(prompt) { raw -> onDelta(normalize(raw).trimStart()) }
+                )
+            )
             if (text.isEmpty()) Result.Failed(IOException("模型返回空内容")) else Result.Success(
                 text
             )

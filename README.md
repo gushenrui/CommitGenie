@@ -97,6 +97,8 @@ Anthropic 兼容接口。
 - **错误细分**：回调内先读状态码，非 2xx 时主动读服务端响应体（自动处理 gzip 与 charset），
   摘要优先取 JSON 的 `error.message` 并截断到 500 字符。413 直接判定为请求体过大；400 结合
   文案关键词判断，401/403 等鉴权失败不参与，避免误报。前者提示缩小勾选范围，超时则提示稍后重试。
+- **输出清理**：完整结果写回前统一剥离首尾代码围栏、`<think>` 一类思考区块与前置引导语，
+  兼容 `Here is the commit message: feat: ...` 这种与正文同行的写法；流式过程中仍原样展示。
 
 ### 目录结构
 
@@ -104,7 +106,7 @@ Anthropic 兼容接口。
 src/main/kotlin/com/gushenrui/commitgenie/
 ├── action/     # Action、生成流程服务、加载态、通知、图标
 ├── git/        # 勾选变更读取、diff 构建、历史提交采样
-├── model/      # OpenAI / Anthropic 客户端（SSE 流式）
+├── model/      # OpenAI / Anthropic 客户端（SSE 流式）、输出清理
 ├── prompt/     # 提示词组装
 └── settings/   # 配置持久化与设置页
 ```
