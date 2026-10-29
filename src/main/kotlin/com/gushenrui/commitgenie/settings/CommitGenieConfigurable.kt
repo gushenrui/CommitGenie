@@ -36,6 +36,15 @@ class CommitGenieConfigurable : Configurable {
     private var language = ""
     private var customPrompt = ""
 
+    /** 已加载的密钥基线，用于判断密码框是否被用户改动。 */
+    private var loadedApiKey = ""
+
+    /** 密钥是否已填入密码框；未完成前不把空值判为修改。 */
+    private var apiKeyFilled = false
+
+    /** 后台密钥回调是否仍在等待；UI 释放后丢弃结果。 */
+    private var disposed = false
+
     override fun getDisplayName(): String = "CommitGenie"
 
     override fun createComponent(): JComponent {
@@ -59,7 +68,7 @@ class CommitGenieConfigurable : Configurable {
                         .comment("例如 gpt-4o-mini、deepseek-chat")
                 }
                 row("API Key:") {
-                    // 密码框不保留明文 text，只能直接读写 password 字段
+                    // 密码框不保留明文 text；内容由后台加载完成后回填
                     passwordField()
                         .also { apiKeyField = it }
                         .resizableColumn()
@@ -121,13 +130,16 @@ class CommitGenieConfigurable : Configurable {
             }.resizableRow()
         }
         ui = target
+        disposed = false
         reset()
         return target
     }
 
     override fun isModified(): Boolean {
         val panel = ui ?: return false
-        return panel.isModified() || currentApiKey() != CommitGenieSettings.instance.apiKey
+        // 密钥未加载完成时以空串为基线，用户手动输入同样算修改
+        val baseline = if (apiKeyFilled) loadedApiKey else ""
+        return panel.isModified() || currentApiKey() != baseline
     }
 
     override fun apply() {
@@ -141,7 +153,7 @@ class CommitGenieConfigurable : Configurable {
         settings.state.includeHistory = includeHistory
         settings.state.language = language.trim().ifEmpty { CommitGenieSettings.LANGUAGE_AUTO }
         settings.state.customPrompt = customPrompt
-        settings.apiKey = currentApiKey()
+        settings.saveApiKey(currentApiKey())
     }
 
     override fun reset() {
@@ -155,11 +167,33 @@ class CommitGenieConfigurable : Configurable {
         includeHistory = state.includeHistory
         language = state.language
         customPrompt = state.customPrompt
-        apiKeyField?.component?.text = settings.apiKey
         ui?.reset()
+        // reset 必须恢复已保存的密钥；尚未加载时由后台回调补充
+        val pendingKey = settings.apiKey
+        apiKeyFilled = pendingKey != null
+        loadedApiKey = pendingKey.orEmpty()
+        apiKeyField?.component?.text = loadedApiKey
+        if (pendingKey == null) {
+            settings.loadApiKey { key -> fillApiKeyIfUntouched(key) }
+        }
+    }
+
+    /** 回填已加载的密钥，并同步修改判断的基线。 */
+    private fun fillApiKey(key: String) {
+        loadedApiKey = key
+        apiKeyFilled = true
+        apiKeyField?.component?.text = key
+    }
+
+    /** 设置页已关闭或用户已输入内容时，不覆盖密码框。 */
+    private fun fillApiKeyIfUntouched(key: String) {
+        if (!disposed && !apiKeyFilled && currentApiKey().isEmpty()) {
+            fillApiKey(key)
+        }
     }
 
     override fun disposeUIResources() {
+        disposed = true
         ui = null
         apiKeyField = null
         promptField = null

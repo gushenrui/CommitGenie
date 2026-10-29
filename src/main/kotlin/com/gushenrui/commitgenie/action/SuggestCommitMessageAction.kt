@@ -19,6 +19,7 @@ import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.text.HtmlChunk
 import com.intellij.openapi.vcs.VcsDataKeys
 import com.intellij.openapi.vcs.changes.Change
+import com.intellij.vcs.commit.CommitMessageUi
 import com.intellij.vcs.commit.CommitWorkflowHandler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -60,7 +61,8 @@ class SuggestCommitMessageAction : AnAction() {
 
         val hasChanges = VcsChanges.hasIncludedChanges(project, workflow)
         val isAmend = handler.isAmendMode
-        val configured = instance.isConfigured
+        // 密钥在后台加载：加载期间按钮保持可用，由任务内部等待结果后再判断
+        val configured = instance.isApiKeyPending || instance.isConfigured
 
         presentation.icon = CommitGenieIcons.SUGGEST_COMMIT_MESSAGE
         presentation.setText("")
@@ -84,14 +86,17 @@ class SuggestCommitMessageAction : AnAction() {
         project.getUserData(KEY)?.let { running ->
             project.putUserData(KEY, null)
             running.job?.cancel()
-            if (running.revealed) {
-                messageUi.text = running.snapshot.oldMessage
+            // 密钥尚未加载完就被取消时还没有进入加载态，无需还原
+            running.snapshot?.let { snapshot ->
+                if (running.revealed) {
+                    messageUi.text = snapshot.oldMessage
+                }
+                CommitMessageLoading.stop(messageUi, snapshot)
             }
-            CommitMessageLoading.stop(messageUi, running.snapshot)
             return
         }
 
-        if (!instance.isConfigured) {
+        if (!instance.isConfigured && !instance.isApiKeyPending) {
             Notifications.warn(project, "请先在 $SETTINGS_PATH 中配置 Base URL、Model 与 API Key")
             return
         }
@@ -103,12 +108,30 @@ class SuggestCommitMessageAction : AnAction() {
             return
         }
 
-        val snapshot = CommitMessageLoading.start(messageUi)
         // 先占位再启动：任务可能瞬间完成，晚写入会把状态覆盖回“运行中”
-        val running = RunningJob(snapshot)
+        val running = RunningJob()
         project.putUserData(KEY, running)
+        val scope = CommitGenieCoroutineService.getInstance(project).scope
 
-        running.job = CommitGenieCoroutineService.getInstance(project).scope.launch {
+        running.job = scope.launch {
+            // 密钥可能仍在后台读取；先等到结果再进入加载态，避免白跑一次
+            val settings = instance
+            val apiKey = settings.awaitApiKey()
+            if (apiKey.isBlank()) {
+                withContext(Dispatchers.EDT) {
+                    if (project.getUserData(KEY) !== running) return@withContext
+                    project.putUserData(KEY, null)
+                    Notifications.warn(project, "请先在 $SETTINGS_PATH 中配置 API Key")
+                }
+                return@launch
+            }
+
+            val snapshot = withContext(Dispatchers.EDT) {
+                // 排队期间可能已被取消；此时不得再进入加载态
+                if (project.getUserData(KEY) !== running) return@withContext null
+                CommitMessageLoading.start(messageUi).also { running.snapshot = it }
+            } ?: return@launch
+
             // 无界通道不阻塞网络读取；渲染结束后正常排空，避免最后一段内容被丢弃
             val partial = Channel<String>(Channel.UNLIMITED)
             val renderer = launch(Dispatchers.EDT) {
@@ -125,30 +148,44 @@ class SuggestCommitMessageAction : AnAction() {
 
             var result: String? = null
             try {
-                result = generate(project, changes) { partial.trySend(normalize(it).trimStart()) }
+                result = generate(
+                    project,
+                    changes,
+                    apiKey
+                ) { partial.trySend(normalize(it).trimStart()) }
             } finally {
                 partial.close()
                 withContext(NonCancellable) {
                     renderer.join()
-                    withContext(Dispatchers.EDT) {
-                        // 已被用户取消或被新任务取代时，界面不再归本任务管
-                        if (project.getUserData(KEY) !== running) return@withContext
-                        project.putUserData(KEY, null)
-                        when {
-                            !result.isNullOrBlank() -> messageUi.text = result
-                            // 生成失败时不留半截内容，还原用户原来的输入
-                            running.revealed -> messageUi.text = snapshot.oldMessage
-                        }
-                        CommitMessageLoading.stop(messageUi, snapshot)
-                    }
+                    finish(project, running, messageUi, snapshot, result)
                 }
             }
         }
     }
 
+    /** 收尾：只有当前任务仍持有占位时才更新界面。 */
+    private suspend fun finish(
+        project: Project,
+        running: RunningJob,
+        messageUi: CommitMessageUi,
+        snapshot: CommitMessageLoading.Snapshot,
+        result: String?,
+    ) = withContext(Dispatchers.EDT) {
+        // 已被用户取消或被新任务取代时，界面不再归本任务管
+        if (project.getUserData(KEY) !== running) return@withContext
+        project.putUserData(KEY, null)
+        when {
+            !result.isNullOrBlank() -> messageUi.text = result
+            // 生成失败时不留半截内容，还原用户原来的输入
+            running.revealed -> messageUi.text = snapshot.oldMessage
+        }
+        CommitMessageLoading.stop(messageUi, snapshot)
+    }
+
     private suspend fun generate(
         project: Project,
         changes: List<Change>,
+        apiKey: String,
         onDelta: (String) -> Unit,
     ): String? {
         val settings = instance
@@ -167,7 +204,7 @@ class SuggestCommitMessageAction : AnAction() {
         val prompt = PromptBuilder.build(samples, diff, settings.state)
         val client = ModelClient(
             baseUrl = settings.state.baseUrl,
-            apiKey = settings.apiKey,
+            apiKey = apiKey,
             model = settings.state.model,
             protocol = settings.state.protocol,
         )
@@ -198,9 +235,13 @@ class SuggestCommitMessageAction : AnAction() {
     private fun normalize(text: String): String = text.replace("\r\n", "\n")
 
     /** 占位对象，job 在启动后回填，保证「运行中」状态没有竞态窗口。 */
-    private class RunningJob(val snapshot: CommitMessageLoading.Snapshot) {
+    private class RunningJob {
         @Volatile
         var job: Job? = null
+
+        /** 加载态快照；密钥加载完成后才创建，取消时可能仍为空。 */
+        @Volatile
+        var snapshot: CommitMessageLoading.Snapshot? = null
 
         /** 是否已开始流式写入输入框；只在 EDT 上读写。 */
         var revealed = false
