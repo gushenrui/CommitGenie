@@ -82,16 +82,12 @@ object DiffBuilder {
         patch: TextFilePatch,
         out: StringBuilder,
     ) {
-        out.append("diff --git a/")
-            .append(relativePath(project, baseDir, patch.beforeName))
-            .append(" b/")
-            .append(relativePath(project, baseDir, patch.afterName))
-            .append('\n')
-        out.append("--- ")
-            .append(fileLabel(project, baseDir, patch.beforeName, patch.isNewFile))
-            .append('\n')
-        out.append("+++ ")
-            .append(fileLabel(project, baseDir, patch.afterName, patch.isDeletedFile))
+        // 新增/删除文件只有一侧有名字，diff --git 行两侧都用已知的那个
+        val beforePath = relativePath(project, baseDir, patch.beforeName ?: patch.afterName)
+        val afterPath = relativePath(project, baseDir, patch.afterName ?: patch.beforeName)
+        out.append("diff --git a/").append(beforePath).append(" b/").append(afterPath).append('\n')
+        out.append("--- ").append(if (patch.isNewFile) DEV_NULL else "a/$beforePath").append('\n')
+        out.append("+++ ").append(if (patch.isDeletedFile) DEV_NULL else "b/$afterPath")
             .append('\n')
         patch.hunks.forEach { hunk ->
             out.append("@@ -")
@@ -131,19 +127,9 @@ object DiffBuilder {
         PatchLine.Type.REMOVE -> '-'
     }
 
+    /** 空范围按 unified diff 规范写成 `start,0`，start 为插入点之前的行号。 */
     private fun range(start: Int, end: Int): String =
-        if (start == end) "$start,1" else "${start + 1},${end - start}"
-
-    private fun fileLabel(
-        project: Project,
-        baseDir: java.nio.file.Path,
-        name: String?,
-        deleted: Boolean,
-    ): String {
-        if (name == null) return "/dev/null"
-        val prefix = if (deleted) "a/" else "b/"
-        return prefix + relativePath(project, baseDir, name)
-    }
+        if (start == end) "$start,0" else "${start + 1},${end - start}"
 
     private fun relativePath(project: Project, baseDir: java.nio.file.Path, name: String?): String {
         val path = name ?: return ""
@@ -197,4 +183,5 @@ object DiffBuilder {
     }
 
     private const val NO_NEWLINE_SIGNATURE = "\\ No newline at end of file"
+    private const val DEV_NULL = "/dev/null"
 }

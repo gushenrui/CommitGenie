@@ -6,10 +6,14 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.util.io.HttpRequests
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 调用 OpenAI 兼容的 `/chat/completions` 接口。
@@ -36,6 +40,15 @@ class OpenAiClient(
         val context = currentCoroutineContext()
         val sink = StreamingCollector()
         val body = requestBody(prompt)
+        // readLine 阻塞时感知不到协程取消。子协程在取消时断开连接，让阻塞的读取立即抛出
+        val activeConnection = AtomicReference<HttpURLConnection?>()
+        val disconnectOnCancel = launch {
+            try {
+                awaitCancellation()
+            } finally {
+                activeConnection.getAndSet(null)?.disconnect()
+            }
+        }
 
         try {
             // post 的第二个参数是 Content-Type，请求体要在 connect 回调里写入
@@ -48,6 +61,9 @@ class OpenAiClient(
                 .readTimeout(timeoutMs)
                 .throwStatusCodeException(true)
                 .connect<String> { request ->
+                    activeConnection.set(request.connection as? HttpURLConnection)
+                    // 登记连接前可能已被取消，此时子协程已收尾，需要在这里自行退出
+                    context.ensureActive()
                     request.write(body)
                     request.reader.use { reader ->
                         while (true) {
@@ -76,6 +92,8 @@ class OpenAiClient(
             }
             throw IOException("模型接口返回 ${e.statusCode}: ${detail.take(500)}", e)
         } catch (e: IOException) {
+            // 取消时断开连接也会表现为 IOException，此时应按取消处理而不是报错
+            context.ensureActive()
             // 部分网关不触发 HttpStatusException，错误会以普通 IOException 抛出
             LOG.warn(
                 "请求异常 type=${e.javaClass.name} endpoint=${endpoint()} " +
@@ -86,6 +104,10 @@ class OpenAiClient(
                 throw PayloadTooLargeException("请求内容超出模型上限：${e.message}", e)
             }
             throw e
+        } finally {
+            // 正常结束时先解除登记，避免收尾时误断连接
+            activeConnection.set(null)
+            disconnectOnCancel.cancel()
         }
     }
 

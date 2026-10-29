@@ -19,9 +19,7 @@ import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.text.HtmlChunk
 import com.intellij.openapi.vcs.VcsDataKeys
 import com.intellij.openapi.vcs.changes.Change
-import com.intellij.vcs.commit.CommitMessageUi
 import com.intellij.vcs.commit.CommitWorkflowHandler
-import com.intellij.vcs.commit.CommitWorkflowUi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -68,7 +66,7 @@ class SuggestCommitMessageAction : AnAction() {
         presentation.description = when {
             isAmend -> "Amend 模式下不支持生成提交信息"
             !hasChanges -> "请先勾选至少一个变更的文件"
-            !configured -> "请先在 Settings → CommitGenie 中配置模型与 API Key"
+            !configured -> "请先在 $SETTINGS_PATH 中配置模型与 API Key"
             else -> "根据当前选中的变更生成提交信息"
         }
         presentation.isEnabled = !isAmend && hasChanges && configured
@@ -80,15 +78,24 @@ class SuggestCommitMessageAction : AnAction() {
         val workflow = event.getData(VcsDataKeys.COMMIT_WORKFLOW_UI) ?: return
         val messageUi = workflow.commitMessageUi
 
-        // 已有任务在跑，说明用户此刻要的是取消；界面收尾统一由任务的 finally 完成
+        // 已有任务在跑，说明用户此刻要的是取消。
+        // 界面立即还原：任务可能正阻塞在网络读取上，等它的 finally 会让加载态残留很久
         project.getUserData(KEY)?.let { running ->
             project.putUserData(KEY, null)
             running.job?.cancel()
+            CommitMessageLoading.stop(messageUi, running.snapshot)
             return
         }
 
         if (!instance.isConfigured) {
-            Notifications.warn(project, "请先在 Settings → CommitGenie 中配置 Base URL、Model 与 API Key")
+            Notifications.warn(project, "请先在 $SETTINGS_PATH 中配置 Base URL、Model 与 API Key")
+            return
+        }
+
+        // 勾选状态属于 Swing 组件，必须在 EDT 上读取，再把结果交给后台任务
+        val changes = VcsChanges.includedChanges(project, workflow)
+        if (changes.isEmpty()) {
+            Notifications.warn(project, "没有可生成的变更")
             return
         }
 
@@ -100,35 +107,25 @@ class SuggestCommitMessageAction : AnAction() {
         running.job = CommitGenieCoroutineService.getInstance(project).scope.launch {
             var result: String? = null
             try {
-                result = generate(project, workflow, messageUi)
+                result = generate(project, changes)
             } finally {
                 // finally 中不能直接用 withContext：协程已被取消时会立即抛出，界面会卡在加载态
                 val text = result
                 withContext(Dispatchers.EDT + NonCancellable) {
+                    // 已被用户取消或被新任务取代时，界面不再归本任务管
+                    if (project.getUserData(KEY) !== running) return@withContext
+                    project.putUserData(KEY, null)
                     if (!text.isNullOrBlank()) {
                         messageUi.text = text
                     }
                     CommitMessageLoading.stop(messageUi, snapshot)
-                    if (project.getUserData(KEY) === running) {
-                        project.putUserData(KEY, null)
-                    }
                 }
             }
         }
     }
 
-    private suspend fun generate(
-        project: Project,
-        workflow: CommitWorkflowUi,
-        messageUi: CommitMessageUi,
-    ): String? {
+    private suspend fun generate(project: Project, changes: List<Change>): String? {
         val settings = instance
-        val changes: List<Change> = VcsChanges.includedChanges(project, workflow)
-        if (changes.isEmpty()) {
-            Notifications.warn(project, "没有可生成的变更")
-            return null
-        }
-
         val diff = DiffBuilder.buildDiff(project, changes, settings.state.maxDiffChars)
         if (diff.isBlank()) {
             Notifications.warn(project, "无法为所选变更生成 diff")
@@ -202,6 +199,7 @@ class SuggestCommitMessageAction : AnAction() {
 
     private companion object {
         const val STOP_TEXT = "Stop Generating Commit Message"
+        const val SETTINGS_PATH = "Settings → Tools → CommitGenie"
         val KEY = Key<RunningJob>("commitgenie.suggestCommitMessage.job")
         val LOG: Logger = Logger.getInstance(SuggestCommitMessageAction::class.java)
 
