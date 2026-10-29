@@ -1,9 +1,6 @@
 package com.gushenrui.commitgenie.action
 
-import com.gushenrui.commitgenie.git.DiffBuilder
 import com.gushenrui.commitgenie.git.VcsChanges
-import com.gushenrui.commitgenie.model.ModelClient
-import com.gushenrui.commitgenie.prompt.PromptBuilder
 import com.gushenrui.commitgenie.settings.CommitGenieSettings.Companion.instance
 import com.intellij.ide.HelpTooltip
 import com.intellij.openapi.actionSystem.ActionUpdateThread
@@ -18,10 +15,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.text.HtmlChunk
 import com.intellij.openapi.vcs.VcsDataKeys
-import com.intellij.openapi.vcs.changes.Change
 import com.intellij.vcs.commit.CommitMessageUi
 import com.intellij.vcs.commit.CommitWorkflowHandler
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -111,17 +106,15 @@ class SuggestCommitMessageAction : AnAction() {
         // 先占位再启动：任务可能瞬间完成，晚写入会把状态覆盖回“运行中”
         val running = RunningJob()
         project.putUserData(KEY, running)
-        val scope = CommitGenieCoroutineService.getInstance(project).scope
+        val generator = CommitMessageGenerator.getInstance(project)
 
-        running.job = scope.launch {
-            // 密钥可能仍在后台读取；先等到结果再进入加载态，避免白跑一次
-            val settings = instance
-            val apiKey = settings.awaitApiKey()
-            if (apiKey.isBlank()) {
+        running.job = generator.scope.launch {
+            // 密钥可能仍在后台读取：先等它就绪再进入加载态，避免遮罩闪一下就消失
+            if (!generator.awaitConfigured()) {
                 withContext(Dispatchers.EDT) {
                     if (project.getUserData(KEY) !== running) return@withContext
                     project.putUserData(KEY, null)
-                    Notifications.warn(project, "请先在 $SETTINGS_PATH 中配置 API Key")
+                    notifyFailure(project, CommitMessageGenerator.Result.NotConfigured)
                 }
                 return@launch
             }
@@ -136,7 +129,7 @@ class SuggestCommitMessageAction : AnAction() {
             val partial = Channel<String>(Channel.UNLIMITED)
             val renderer = launch(Dispatchers.EDT) {
                 for (text in partial) {
-                    if (project.getUserData(KEY) !== running) break
+                    if (project.isDisposed || project.getUserData(KEY) !== running) break
                     // 首字到达后隐藏遮罩，输入框保持只读直至生成结束
                     if (!running.revealed) {
                         CommitMessageLoading.reveal(messageUi)
@@ -146,13 +139,10 @@ class SuggestCommitMessageAction : AnAction() {
                 }
             }
 
-            var result: String? = null
+            // 取消会以 CancellationException 抛出，此时保持 null，界面由取消分支负责还原
+            var result: CommitMessageGenerator.Result? = null
             try {
-                result = generate(
-                    project,
-                    changes,
-                    apiKey
-                ) { partial.trySend(normalize(it).trimStart()) }
+                result = generator.generate(project, changes) { partial.trySend(it) }
             } finally {
                 partial.close()
                 withContext(NonCancellable) {
@@ -169,77 +159,65 @@ class SuggestCommitMessageAction : AnAction() {
         running: RunningJob,
         messageUi: CommitMessageUi,
         snapshot: CommitMessageLoading.Snapshot,
-        result: String?,
+        result: CommitMessageGenerator.Result?,
     ) = withContext(Dispatchers.EDT) {
+        // 项目关闭时输入框可能已被释放，不能再触碰组件
+        if (project.isDisposed) return@withContext
         // 已被用户取消或被新任务取代时，界面不再归本任务管
         if (project.getUserData(KEY) !== running) return@withContext
         project.putUserData(KEY, null)
-        when {
-            !result.isNullOrBlank() -> messageUi.text = result
+        when (result) {
+            is CommitMessageGenerator.Result.Success -> messageUi.text = result.message
             // 生成失败时不留半截内容，还原用户原来的输入
-            running.revealed -> messageUi.text = snapshot.oldMessage
+            else -> if (running.revealed) messageUi.text = snapshot.oldMessage
         }
         CommitMessageLoading.stop(messageUi, snapshot)
+        result?.let { notifyFailure(project, it) }
     }
 
-    private suspend fun generate(
-        project: Project,
-        changes: List<Change>,
-        apiKey: String,
-        onDelta: (String) -> Unit,
-    ): String? {
-        val settings = instance
-        val diff = DiffBuilder.buildDiff(project, changes, settings.state.maxDiffChars)
-        if (diff.isBlank()) {
-            Notifications.warn(project, "无法为所选变更生成 diff")
-            return null
-        }
+    /** 把服务返回的失败原因转换成用户可见的提示；成功不提示。 */
+    private fun notifyFailure(project: Project, result: CommitMessageGenerator.Result) {
+        when (result) {
+            CommitMessageGenerator.Result.NotConfigured ->
+                Notifications.warn(
+                    project,
+                    "请先在 $SETTINGS_PATH 中配置 Base URL、Model 与 API Key"
+                )
 
-        val samples = if (settings.state.includeHistory) {
-            VcsChanges.sampleCommitMessages(project, settings.state.sampleCommitCount)
-        } else {
-            emptyList()
-        }
+            CommitMessageGenerator.Result.EmptyDiff ->
+                Notifications.warn(project, "无法为所选变更生成 diff")
 
-        val prompt = PromptBuilder.build(samples, diff, settings.state)
-        val client = ModelClient(
-            baseUrl = settings.state.baseUrl,
-            apiKey = apiKey,
-            model = settings.state.model,
-            protocol = settings.state.protocol,
-        )
+            is CommitMessageGenerator.Result.PayloadTooLarge -> {
+                LOG.warn("变更过大，模型无法处理", result.cause)
+                Notifications.warn(
+                    project,
+                    "变更过大，无法由模型总结。请缩小勾选范围或调小 Diff 最大字符数。"
+                )
+            }
 
-        return try {
-            normalize(client.generate(prompt, onDelta)).trim()
-        } catch (e: CancellationException) {
-            // 取消信号必须继续向上传播，否则 finally 里的收尾逻辑会误判为正常结束
-            throw e
-        } catch (e: ModelClient.PayloadTooLargeException) {
-            LOG.warn("变更过大，模型无法处理", e)
-            Notifications.warn(
-                project,
-                "变更过大，无法由模型总结。请缩小勾选范围或调小 Diff 最大字符数。"
-            )
-            null
-        } catch (e: java.net.SocketTimeoutException) {
-            LOG.warn("模型响应超时", e)
-            Notifications.warn(project, "模型未在超时时间内响应，请稍后重试。")
-            null
-        } catch (e: Exception) {
-            LOG.warn("生成提交信息失败", e)
-            Notifications.error(project, "生成失败：${e.message ?: e.javaClass.simpleName}")
-            null
+            is CommitMessageGenerator.Result.Timeout -> {
+                LOG.warn("模型响应超时", result.cause)
+                Notifications.warn(project, "模型未在超时时间内响应，请稍后重试。")
+            }
+
+            is CommitMessageGenerator.Result.Failed -> {
+                LOG.warn("生成提交信息失败", result.cause)
+                Notifications.error(
+                    project,
+                    "生成失败：${result.cause.message ?: result.cause.javaClass.simpleName}"
+                )
+            }
+
+            is CommitMessageGenerator.Result.Success -> Unit
         }
     }
-
-    private fun normalize(text: String): String = text.replace("\r\n", "\n")
 
     /** 占位对象，job 在启动后回填，保证「运行中」状态没有竞态窗口。 */
     private class RunningJob {
         @Volatile
         var job: Job? = null
 
-        /** 加载态快照；密钥加载完成后才创建，取消时可能仍为空。 */
+        /** 加载态快照；进入加载态后才创建，取消时可能仍为空。 */
         @Volatile
         var snapshot: CommitMessageLoading.Snapshot? = null
 

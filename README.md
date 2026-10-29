@@ -100,7 +100,7 @@ Anthropic 兼容接口。
 
 ```
 src/main/kotlin/com/gushenrui/commitgenie/
-├── action/     # Action、协程服务、加载态、通知、图标
+├── action/     # Action、生成流程服务、加载态、通知、图标
 ├── git/        # 勾选变更读取、diff 构建、历史提交采样
 ├── model/      # OpenAI / Anthropic 客户端（SSE 流式）
 ├── prompt/     # 提示词组装

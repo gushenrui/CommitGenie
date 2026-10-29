@@ -15,7 +15,7 @@
 | 10   | `generate()` 的 `indicator` 参数无人使用 | 清理          | 低     | 已处理 |
 | 11   | 手写 JSON 拼接请求体                     | 可维护性      | 中     | 已处理 |
 | 12   | `relativePath` 的相对路径基准不一致      | 正确性        | 中     | 已处理 |
-| 13   | Action 直接依赖 Project 级协程服务       | 可测试性      | 低     | 待处理 |
+| 13   | Action 直接依赖 Project 级协程服务       | 可测试性      | 低     | 已处理 |
 | 14   | 未读取错误响应体，400 细分判断失效       | 正确性 / 诊断 | 高     | 待处理 |
 | 15   | `temperature` 硬编码为 1                 | 可配置性      | 低     | 待处理 |
 | 16   | 模型输出未清理代码围栏与思考标签         | 健壮性        | 中     | 待处理 |
@@ -180,6 +180,14 @@ val absolute = if (Paths.get(path).isAbsolute) Paths.get(path) else baseDir.reso
   `suspend fun generate(changes, onDelta): Result<String>`，协程作用域在服务内部持有；
 - Action 只保留：读取数据 → 判断是否取消 → 调用服务 → 处理返回；
 - 服务通过构造函数接收 `CoroutineScope` 与 `CommitGenieSettings`，便于替换为测试替身。
+
+**处理结果**：新增 `action/CommitMessageGenerator.kt`，以 `@Service(Service.Level.PROJECT)`
+注册，构造器接收 `CoroutineScope` 与 `CommitGenieSettings`。平台按
+`CoroutineScope` 构造器注入的作用域已与项目容器作用域取交集，项目关闭即取消，无需自建
+`SupervisorJob`。对外只暴露 `suspend fun generate(project, changes, onDelta): Result`，
+用 sealed `Result` 区分「未配置 / diff 为空 / 内容过大 / 超时 / 其他失败」，不再直接弹通知。
+Action 侧删除了自带的 `generate()`，只负责读取勾选、占位取消、流式渲染与失败提示；
+`CommitGenieCoroutineService` 已删除。
 
 ---
 
