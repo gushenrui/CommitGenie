@@ -10,14 +10,6 @@
     - **建议**：在 `languageInstruction` 中结合 `sampleMessages.isNotEmpty()` 判断；若没有历史提交样本且语言为
       `Auto`，不追加该句指令（或回退为默认语言提示）。
 
-- [ ] **支持部分提交（Partial Commit / 代码块级勾选）**
-    - **位置**：`src/main/kotlin/com/gushenrui/commitgenie/git/VcsChanges.kt`（第 32–46 行）、
-      `src/main/kotlin/com/gushenrui/commitgenie/git/DiffBuilder.kt`（第 45 行）
-    - **现状**：当用户在非模态提交面板中只勾选了某个文件内的**部分改动行（chunk）**时，`DiffBuilder`
-      仍对整个 `Change` 调用 `DefaultPatchBuilder.buildPatches`，导致未勾选的代码块也被一并送入模型。
-    - **建议**：结合 `LineStatusTrackerManager` 或部分提交的 `ChangeListChange` / changelist 范围过滤
-      hunk，仅将实际勾选的代码块渲染进 diff。
-
 - [ ] **优化多仓库（Multi-root）项目的历史提交采样来源**
     - **位置**：`src/main/kotlin/com/gushenrui/commitgenie/git/VcsChanges.kt`（第 79–99 行）
     - **现状**：`sampleCommitMessages` 直接按顺序遍历
