@@ -5,7 +5,7 @@
     <vendor>gushenrui</vendor>
 
     <description><![CDATA[
-        使用任意 OpenAI 兼容接口的模型生成 Git 提交信息。<br/>
+        使用 OpenAI 兼容（/chat/completions）或 Anthropic（/messages）接口的模型生成 Git 提交信息。<br/>
         在提交面板的消息输入框工具栏点击按钮，或按 ⌃\ 快捷键，
         即可根据当前勾选的变更生成提交信息。<br/>
         支持采样仓库历史提交作为风格参考，生成过程可随时取消。

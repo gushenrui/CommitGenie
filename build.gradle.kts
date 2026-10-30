@@ -49,7 +49,7 @@ intellijPlatform {
         name = "CommitGenie"
         version = project.version.toString()
         description = """
-            <p>使用任意 OpenAI 兼容接口的模型生成 Git 提交信息。</p>
+            <p>使用 OpenAI 兼容（/chat/completions）或 Anthropic（/messages）接口的模型生成 Git 提交信息。</p>
             <p>在提交面板的消息输入框工具栏点击按钮，或按 ⌃\\ 快捷键，即可根据当前勾选的变更生成提交信息。</p>
         """.trimIndent()
 

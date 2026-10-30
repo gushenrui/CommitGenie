@@ -15,8 +15,8 @@ Anthropic 兼容接口。
 - **流式生成**：边生成边显示，长提交信息无需干等。
 - **随时取消**：生成中再次点击按钮或再次按 `⌃\` 即取消。
 - **富文本提示（rich tooltip）**：按钮在禁用态也会说明原因——未勾选文件、未配置模型、处于 Amend 模式等。
-- **Diff 精简与截断**：过滤掉 `IDEA additional info:` 等无意义行，按码点安全截断（不会把 emoji 劈成非法
-  UTF-8）。
+- **Diff 精简与截断**：自绘 unified diff 头与 hunk，不输出 `IDEA additional info:`、文件版本号等平台附加信息；
+  按码点安全截断（不会把 emoji 劈成非法 UTF-8）。
 - **可编辑提示词**：内置提示词与原版语义一致，也可用 `$COMMIT_DIFF` / `$SAMPLE_COMMIT_MESSAGES`
   宏完全自定义。
 - **API Key 安全存储**：写入系统钥匙串，不落盘到配置文件。
