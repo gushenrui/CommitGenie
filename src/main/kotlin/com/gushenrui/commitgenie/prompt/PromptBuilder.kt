@@ -22,7 +22,7 @@ object PromptBuilder {
                 .replace(MACRO_DIFF, diff)
         }
 
-        val languageClause = languageInstruction(settings.language)
+        val languageClause = languageInstruction(settings.language, sampleMessages.isNotEmpty())
         return buildString {
             appendLine("You are an experienced software engineer and efficient technical communicator.")
             appendLine("Summarize the given diffs into a concise commit message.")
@@ -50,9 +50,14 @@ object PromptBuilder {
         }.joinToString(SAMPLE_SEPARATOR) + "\n==== End of examples ===="
     }
 
-    private fun languageInstruction(language: String): String = when {
+    private fun languageInstruction(language: String, hasSamples: Boolean): String = when {
         language.isBlank() || language.equals(CommitGenieSettings.LANGUAGE_AUTO, ignoreCase = true) ->
-            "Write the commit message in the same language as the sample commit messages."
+            // 没有历史样本时无法「跟随示例语言」，交给模型按 diff 自行判断
+            if (hasSamples) {
+                "Write the commit message in the same language as the sample commit messages."
+            } else {
+                "Write the commit message in the most appropriate language for the diffs."
+            }
         else -> "Write the commit message in $language."
     }
 
