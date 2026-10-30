@@ -27,7 +27,7 @@
 
 ## 二、 性能与交互体验优化
 
-- [ ] **拆分网络连接超时（`connectTimeout`）与读取超时（`readTimeout`）**
+- [x] **拆分网络连接超时（`connectTimeout`）与读取超时（`readTimeout`）**
     - **位置**：`src/main/kotlin/com/gushenrui/commitgenie/model/ModelClient.kt`（第 67–68、319 行）
     - **现状**：`connectTimeout` 和 `readTimeout` 均使用 `DEFAULT_TIMEOUT_MS`（120 秒）。当 Base URL
       主机不可达或端口错误时，用户需等待整整 2 分钟才会收到连接失败提示。

@@ -30,7 +30,8 @@ class ModelClient(
     private val apiKey: String,
     private val model: String,
     private val protocol: ModelProtocol,
-    private val timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+    private val connectTimeoutMs: Int = DEFAULT_CONNECT_TIMEOUT_MS,
+    private val readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
 ) {
 
     /**
@@ -71,8 +72,8 @@ class ModelClient(
                     // Java 默认请求 gzip；部分网关会缓冲压缩后的 SSE，直到完成才一次性返回
                     connection.setRequestProperty("Accept-Encoding", "identity")
                 }
-                .connectTimeout(timeoutMs)
-                .readTimeout(timeoutMs)
+                .connectTimeout(connectTimeoutMs)
+                .readTimeout(readTimeoutMs)
                 .throwStatusCodeException(true)
                 .connect<String> { request ->
                     val connection = request.connection as? HttpURLConnection
@@ -403,7 +404,11 @@ class ModelClient(
     }
 
     companion object {
-        private const val DEFAULT_TIMEOUT_MS = 120_000
+        /** 建连超时：主机不可达或端口错误时尽快失败，避免用户干等。 */
+        private const val DEFAULT_CONNECT_TIMEOUT_MS = 10_000
+
+        /** 读取超时：慢速推理模型仍需较长等待，保持宽裕。 */
+        private const val DEFAULT_READ_TIMEOUT_MS = 120_000
         private const val DONE = "[DONE]"
         private const val ANTHROPIC_VERSION = "2023-06-01"
         private const val MAX_OUTPUT_TOKENS = 4_096
