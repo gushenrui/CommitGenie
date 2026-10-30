@@ -17,14 +17,6 @@
       `break`。若项目包含多个 Git 仓库且用户仅勾选了第二个仓库的文件，采样到的却是第一个仓库的提交历史。
     - **建议**：根据当前勾选的 `changes` 定位所属的 `GitRepository` 集合，优先从变更涉及的仓库采样历史提交。
 
-- [ ] **清理或简化二进制文件的 Diff 渲染与内存读取**
-    - **位置**：`src/main/kotlin/com/gushenrui/commitgenie/git/DiffBuilder.kt`（第 125–138、160–171 行）
-    - **现状**：`constrainBinaryChanges` 只包装了 `change.afterRevision`，若删除或修改超大二进制文件，
-      `change.beforeRevision` 仍会在 `renderBinaryPatch` 计算 `sha1(patch.beforeContent)`
-      时将完整字节数组读入内存。此外，二进制文件的 SHA-1 哈希（`index a1b2..c3d4`）对大模型生成提交信息并无实质帮助。
-    - **建议**：对 `BinaryFilePatch` 直接输出文件增删改状态与路径（如
-      `Binary files a/... and b/... differ`），省去读取二进制内容和计算 SHA-1 的开销，同时完全规避大二进制文件的内存占用。
-
 ## 二、 性能与交互体验优化
 
 - [x] **拆分网络连接超时（`connectTimeout`）与读取超时（`readTimeout`）**
@@ -44,15 +36,6 @@
     - **建议**：识别流式思考块事件并回调状态（或将遮罩文案切换为 `"Thinking..."`），对于把
       `<think>...</think>` 混在 `content` 中的模型，也可在流式阶段实时过滤已闭合/进行中的 `<think>`
       内容，避免思考过程在输入框里闪现后再被擦除。
-
-- [ ] **设置页控件联动与「测试连接」功能**
-    - **位置**：`src/main/kotlin/com/gushenrui/commitgenie/settings/CommitGenieConfigurable.kt`（第
-      49–89 行）
-    - **现状**：「历史提交采样条数」Spinner 与「采样仓库历史提交作为风格参考」复选框相互独立，取消勾选复选框时
-      Spinner 依然可编辑；同时修改模型配置后无法在设置页直接验证连通性。
-    - **建议**：使用 Kotlin UI DSL 的 `.enabledIf(...)` 将采样条数 Spinner
-      绑定到复选框选中状态；在「模型接口」分组下增加「测试连接」按钮，发送一条极简请求验证 Base URL、Model
-      与 API Key 是否可用。
 
 ## 三、 文档同步与工程质量
 
