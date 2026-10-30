@@ -74,7 +74,11 @@ class CommitMessageGenerator(
             if (diff.isBlank()) return Result.EmptyDiff
 
             val samples = if (settings.state.includeHistory) {
-                VcsChanges.sampleCommitMessages(project, settings.state.sampleCommitCount)
+                VcsChanges.sampleCommitMessages(
+                    project,
+                    changes,
+                    settings.state.sampleCommitCount,
+                )
             } else {
                 emptyList()
             }

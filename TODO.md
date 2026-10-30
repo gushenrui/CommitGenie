@@ -10,7 +10,7 @@
     - **建议**：在 `languageInstruction` 中结合 `sampleMessages.isNotEmpty()` 判断；若没有历史提交样本且语言为
       `Auto`，不追加该句指令（或回退为默认语言提示）。
 
-- [ ] **优化多仓库（Multi-root）项目的历史提交采样来源**
+- [x] **优化多仓库（Multi-root）项目的历史提交采样来源**
     - **位置**：`src/main/kotlin/com/gushenrui/commitgenie/git/VcsChanges.kt`（第 79–99 行）
     - **现状**：`sampleCommitMessages` 直接按顺序遍历
       `GitRepositoryManager.getInstance(project).repositories`，在第一个仓库采满 `limit` 条后即

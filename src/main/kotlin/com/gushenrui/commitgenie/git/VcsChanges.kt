@@ -7,6 +7,7 @@ import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangesViewWorkflowManager
 import com.intellij.openapi.vcs.changes.CurrentContentRevision
 import com.intellij.openapi.vcs.changes.InclusionModel
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.vcs.commit.CommitWorkflowUi
 import com.intellij.vcs.commit.SingleChangeListCommitWorkflowUi
 import git4idea.history.GitHistoryUtils
@@ -76,15 +77,19 @@ object VcsChanges {
     /**
      * 采样最近的提交信息，用于让模型模仿仓库既有的书写风格。
      *
+     * 多仓库项目中优先采样本次变更涉及的仓库，避免勾选了第二个仓库的文件却读到第一个仓库的历史；
+     * 涉及的仓库采样不足 [limit] 时再用其余仓库补齐。
      * 逐个仓库读取，任一仓库失败只跳过该仓库，不影响其余采样结果。
      */
-    suspend fun sampleCommitMessages(project: Project, limit: Int): List<String> {
+    suspend fun sampleCommitMessages(
+        project: Project,
+        changes: List<Change>,
+        limit: Int,
+    ): List<String> {
         if (limit <= 0) return emptyList()
 
         return withContext(Dispatchers.IO) {
-            val roots = runCatching {
-                GitRepositoryManager.getInstance(project).repositories.map { it.root }
-            }.getOrDefault(emptyList())
+            val roots = runCatching { samplingRoots(project, changes) }.getOrDefault(emptyList())
 
             val messages = mutableListOf<String>()
             for (root in roots) {
@@ -97,6 +102,22 @@ object VcsChanges {
             }
             messages
         }
+    }
+
+    /**
+     * 计算采样顺序：本次变更所属的仓库在前，其余仓库用于补齐。
+     *
+     * 变更可能只来自多仓库项目中的某几个仓库，按固定顺序遍历会读到无关仓库的历史。
+     */
+    private fun samplingRoots(project: Project, changes: List<Change>): List<VirtualFile> {
+        val manager = GitRepositoryManager.getInstance(project)
+        // 用 Quick 变体只查已初始化的仓库，避免为每个变更触发一次同步的仓库刷新；
+        // 使用 FilePath 而非 VirtualFile，已删除的文件也能定位到仓库
+        val involved = changes.mapNotNull { change ->
+            val file = change.afterRevision?.file ?: change.beforeRevision?.file
+            file?.let { manager.getRepositoryForFileQuick(it) }
+        }
+        return (involved + manager.repositories).distinctBy { it.root.path }.map { it.root }
     }
 
     /** 去掉 Change-Id、Signed-off-by 这类与提交语义无关的尾注。 */
