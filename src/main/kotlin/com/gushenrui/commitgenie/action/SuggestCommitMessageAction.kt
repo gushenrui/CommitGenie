@@ -127,6 +127,7 @@ class SuggestCommitMessageAction : AnAction() {
 
             // 无界通道不阻塞网络读取；渲染结束后正常排空，避免最后一段内容被丢弃
             val partial = Channel<String>(Channel.UNLIMITED)
+            val thinking = Channel<Unit>(Channel.UNLIMITED)
             val renderer = launch(Dispatchers.EDT) {
                 for (text in partial) {
                     if (project.isDisposed || project.getUserData(KEY) !== running) break
@@ -138,15 +139,28 @@ class SuggestCommitMessageAction : AnAction() {
                     messageUi.text = text
                 }
             }
+            val thinkingRenderer = launch(Dispatchers.EDT) {
+                for (event in thinking) {
+                    if (project.isDisposed || project.getUserData(KEY) !== running) break
+                    if (!running.revealed) CommitMessageLoading.thinking(messageUi)
+                }
+            }
 
             // 取消会以 CancellationException 抛出，此时保持 null，界面由取消分支负责还原
             var result: CommitMessageGenerator.Result? = null
             try {
-                result = generator.generate(project, changes) { partial.trySend(it) }
+                result = generator.generate(
+                    project,
+                    changes,
+                    onDelta = { partial.trySend(it) },
+                    onThinking = { thinking.trySend(Unit) },
+                )
             } finally {
                 partial.close()
+                thinking.close()
                 withContext(NonCancellable) {
                     renderer.join()
+                    thinkingRenderer.join()
                     finish(project, running, messageUi, snapshot, result)
                 }
             }

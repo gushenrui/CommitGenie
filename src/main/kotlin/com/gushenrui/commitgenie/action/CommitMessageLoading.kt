@@ -15,6 +15,7 @@ import java.awt.Container
 internal object CommitMessageLoading {
 
     private const val LOADING_TEXT = "Generating commit message"
+    private const val THINKING_TEXT = "Thinking..."
 
     /**
      * 记录进入加载态前的状态。
@@ -32,6 +33,11 @@ internal object CommitMessageLoading {
         editorField(ui)?.isEnabled = false
         ui.startLoading()
         return Snapshot(oldText, oldMessage)
+    }
+
+    /** 收到思考事件时更新遮罩，不展示具体思考内容。 */
+    fun thinking(ui: CommitMessageUi) {
+        loadingPanel(ui)?.setLoadingText(THINKING_TEXT)
     }
 
     /** 首字到达后仅隐藏遮罩，输入框保持只读直至生成结束。 */

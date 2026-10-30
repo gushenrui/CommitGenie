@@ -26,7 +26,7 @@
     - **建议**：将 `connectTimeout` 缩短为 `10_000`～`15_000` ms，仅将 `readTimeout` 保持在 `120_000`
       ms 以容纳慢速推理模型。
 
-- [ ] **优化推理模型（Thinking Models）思考阶段的状态反馈**
+- [x] **优化推理模型（Thinking Models）思考阶段的状态反馈**
     - **位置**：`src/main/kotlin/com/gushenrui/commitgenie/model/ModelClient.kt`（第 295–311 行）、
       `src/main/kotlin/com/gushenrui/commitgenie/action/SuggestCommitMessageAction.kt`（第 127–131 行）
     - **现状**：DeepSeek R1、Qwen3 等模型通过 `delta.reasoning_content`（OpenAI 协议）或

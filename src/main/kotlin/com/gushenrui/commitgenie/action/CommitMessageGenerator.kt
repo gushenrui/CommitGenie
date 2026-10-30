@@ -58,12 +58,14 @@ class CommitMessageGenerator(
      * 执行一次生成，取消时抛出 [CancellationException]。
      *
      * @param onDelta 每收到一段增量文本时回调，参数是截至目前的完整文本
+     * @param onThinking 收到模型思考事件时回调
      * @return 成功文本或分类后的失败原因，界面收尾与提示由调用方负责
      */
     suspend fun generate(
         project: Project,
         changes: List<Change>,
         onDelta: (String) -> Unit,
+        onThinking: () -> Unit = {},
     ): Result {
         return try {
             // 先等密钥加载结束再判断配置，避免读到尚未填充的缓存
@@ -95,7 +97,10 @@ class CommitMessageGenerator(
             // 最终结果再清理围栏、思考区块与前置引导语，避免污染提交信息
             val text = ModelOutputCleaner.clean(
                 normalize(
-                    client.generate(prompt) { raw -> onDelta(normalize(raw).trimStart()) }
+                    client.generate(prompt, onDelta = { raw ->
+                        val trimmed = normalize(raw).trimStart()
+                        if (trimmed.isNotEmpty()) onDelta(trimmed)
+                    }, onThinking = onThinking)
                 )
             )
             if (text.isEmpty()) Result.Failed(IOException("模型返回空内容")) else Result.Success(

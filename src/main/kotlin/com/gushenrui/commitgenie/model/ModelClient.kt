@@ -36,15 +36,18 @@ class ModelClient(
 
     /**
      * @param onDelta 每收到一段增量文本时回调，参数是到目前为止的完整文本
+     * @param onThinking 收到模型思考事件时回调，不传递具体思考内容
      * @return 模型输出的完整文本
      */
     suspend fun generate(
         prompt: String,
         onDelta: (String) -> Unit = {},
+        onThinking: () -> Unit = {},
     ): String = withContext(Dispatchers.IO) {
         // connect 的回调不是挂起函数，先取出上下文供循环内检查取消
         val context = currentCoroutineContext()
         val sink = StreamingCollector(protocol)
+        var thinkingNotified = false
         val body = requestBody(prompt)
         // readLine 阻塞时感知不到协程取消。子协程在取消时断开连接，让阻塞的读取立即抛出
         val activeConnection = AtomicReference<HttpURLConnection?>()
@@ -91,14 +94,16 @@ class ModelClient(
                         while (true) {
                             context.ensureActive()
                             val line = reader.readLine() ?: break
-                            if (sink.consume(line)) {
-                                onDelta(sink.text)
+                            val update = sink.consume(line)
+                            if (update.thinking && !thinkingNotified) {
+                                onThinking()
+                                thinkingNotified = true
                             }
+                            if (update.hasContent) onDelta(sink.text)
                         }
                     }
-                    if (sink.finish()) {
-                        onDelta(sink.text)
-                    }
+                    val finalUpdate = sink.finish()
+                    if (finalUpdate.hasContent) onDelta(sink.text)
                     sink.text
                 }
         } catch (e: IOException) {
@@ -307,46 +312,64 @@ class ModelClient(
      * 3. 网关忽略 `stream: true` 直接返回的单行或多行格式化 JSON
      */
     private class StreamingCollector(private val protocol: ModelProtocol) {
+        data class Update(val hasContent: Boolean = false, val thinking: Boolean = false)
+
         private val buffer = StringBuilder()
         private val rawJsonFallback = StringBuilder()
+        private val thinkFilter = StreamingThinkFilter()
         private var seenSseData = false
 
         val text: String get() = buffer.toString()
 
-        /** 返回本次是否产生了新的正文内容。 */
-        fun consume(rawLine: String): Boolean {
+        /** 返回本次产生的正文与思考状态。 */
+        fun consume(rawLine: String): Update {
             val line = rawLine.trim()
-            if (line.isEmpty()) return false
+            if (line.isEmpty()) return Update()
             if (line.startsWith("data:")) {
                 seenSseData = true
                 val payload = line.removePrefix("data:").trim()
-                if (payload == DONE) return false
+                if (payload == DONE) return Update()
                 return appendDelta(payload)
             }
             if (!seenSseData) {
                 // 单行整段 JSON 直接解析；若为多行格式化 JSON 则先暂存，留到 finish() 一次性解析
                 if (line.startsWith("{") && line.endsWith("}")) {
-                    if (appendDelta(line)) return true
+                    val update = appendDelta(line)
+                    if (update.hasContent || update.thinking) return update
                 }
                 // 超限后不再累积：非流式整段 JSON 一旦解析失败，多攒的内容也不会被用到
                 if (rawJsonFallback.length < MAX_FALLBACK_CHARS) {
                     rawJsonFallback.append(line).append('\n')
                 }
             }
-            return false
+            return Update()
         }
 
-        /** 流结束时兜底解析可能存在的多行整段 JSON，返回是否追加了新内容。 */
-        fun finish(): Boolean {
-            if (seenSseData || buffer.isNotEmpty() || rawJsonFallback.isEmpty()) return false
-            val fullJson = rawJsonFallback.toString().trim()
-            if (!fullJson.startsWith("{")) return false
-            return appendDelta(fullJson)
+        /** 流结束时先完成非流式 JSON 解析，再释放跨块暂存内容。 */
+        fun finish(): Update {
+            if (!seenSseData && buffer.isEmpty() && rawJsonFallback.isNotEmpty()) {
+                val fullJson = rawJsonFallback.toString().trim()
+                if (fullJson.startsWith("{")) {
+                    val update = appendDelta(fullJson)
+                    val filtered = thinkFilter.finish()
+                    buffer.append(filtered)
+                    return Update(
+                        hasContent = update.hasContent || filtered.isNotEmpty(),
+                        thinking = update.thinking,
+                    )
+                }
+            }
+            val filtered = thinkFilter.finish()
+            if (filtered.isNotEmpty()) {
+                buffer.append(filtered)
+                return Update(hasContent = true)
+            }
+            return Update()
         }
 
-        private fun appendDelta(json: String): Boolean {
+        private fun appendDelta(json: String): Update {
             val root = runCatching { JsonParser.parseString(json).asJsonObject }.getOrNull()
-                ?: return false
+                ?: return Update()
 
             // 识别 HTTP 200 流式传输中途或非流式 JSON 顶层返回的错误事件，交由外层 classifyFailure 统一归类
             checkStreamError(root)?.let { errorRaw ->
@@ -357,9 +380,10 @@ class ModelClient(
                 ModelProtocol.OPENAI -> extractOpenAiContent(root)
                 ModelProtocol.ANTHROPIC -> extractAnthropicContent(root)
             }
-            if (content.isNullOrEmpty()) return false
-            buffer.append(content)
-            return true
+            if (content.isNullOrEmpty()) return Update(thinking = isThinking(root))
+            val filtered = thinkFilter.append(content)
+            buffer.append(filtered.text)
+            return Update(filtered.text.isNotEmpty(), filtered.thinking || isThinking(root))
         }
 
         private fun checkStreamError(root: JsonObject): String? {
@@ -379,6 +403,21 @@ class ModelClient(
             val first = choices[0].asJsonObject
             return first.getAsJsonObject("delta")?.contentOrNull()
                 ?: first.getAsJsonObject("message")?.contentOrNull()
+        }
+
+        private fun isThinking(root: JsonObject): Boolean = when (protocol) {
+            ModelProtocol.OPENAI -> root.getAsJsonArray("choices")
+                ?.firstOrNull()
+                ?.takeIf(JsonElement::isJsonObject)
+                ?.asJsonObject
+                ?.getAsJsonObject("delta")
+                ?.get("reasoning_content")
+                ?.stringOrNull()
+                ?.isNotEmpty() == true
+
+            ModelProtocol.ANTHROPIC -> root.getAsJsonObject("delta")
+                ?.get("type")
+                ?.stringOrNull() == "thinking_delta"
         }
 
         private fun extractAnthropicContent(root: JsonObject): String? {
@@ -403,6 +442,93 @@ class ModelClient(
             get("text")?.stringOrNull()
     }
 
+    /**
+     * 在流式正文中过滤思考标签，保留可能跨增量块的标签前缀。
+     *
+     * 思考内容不会写入提交输入框；非思考正文中的字面量标签沿用最终清理逻辑保留。
+     */
+    private class StreamingThinkFilter {
+        data class Result(val text: String, val thinking: Boolean)
+
+        private val pending = StringBuilder()
+        private var insideThink = false
+        private var seenContent = false
+
+        fun append(content: String): Result {
+            // 思考块只允许出现在正文开头；正文中的同名标签按字面量透传
+            if (seenContent) return Result(content, false)
+
+            pending.append(content)
+            val text = StringBuilder()
+            var thinking = false
+            while (pending.isNotEmpty()) {
+                if (insideThink) {
+                    val close = THINK_CLOSE.find(pending)
+                    if (close == null) {
+                        // 思考内容可直接丢弃，只保留可能尚未完整的闭合标签
+                        keepPartialTag()
+                        break
+                    }
+                    pending.delete(0, close.range.last + 1)
+                    insideThink = false
+                    thinking = true
+                    continue
+                }
+
+                val open = THINK_OPEN.find(pending)
+                    ?.takeIf { pending.subSequence(0, it.range.first).all(Char::isWhitespace) }
+                if (open == null) {
+                    val partialLength = partialTagLength(pending)
+                    val flushEnd = pending.length - partialLength
+                    // 已有正文时，末尾残缺的 '<...' 属于正文而非思考标签，直接全部输出
+                    val actualEnd = if (pending.subSequence(0, flushEnd).all(Char::isWhitespace)) {
+                        flushEnd
+                    } else {
+                        pending.length
+                    }
+                    text.append(pending, 0, actualEnd)
+                    pending.delete(0, actualEnd)
+                    break
+                }
+                text.append(pending, 0, open.range.first)
+                pending.delete(0, open.range.last + 1)
+                insideThink = true
+                thinking = true
+            }
+            return Result(text.toString(), thinking).also { result ->
+                if (result.text.any { !it.isWhitespace() }) seenContent = true
+            }
+        }
+
+        /** 流结束时，正文中的残缺标签按字面量输出，思考中的残缺标签继续丢弃。 */
+        fun finish(): String {
+            if (insideThink) return ""
+            return pending.toString().also { pending.clear() }
+        }
+
+        private fun keepPartialTag() {
+            val partialLength = partialTagLength(pending)
+            pending.delete(0, pending.length - partialLength)
+        }
+
+        /** 找出末尾可能是思考标签开头的字符数，其余内容可立即处理。 */
+        private fun partialTagLength(text: CharSequence): Int {
+            val start = text.lastIndexOf('<')
+            if (start < 0) return 0
+            val suffix = text.subSequence(start, text.length).toString().lowercase()
+            val couldBeOpen = THINK_TAG_NAMES.any { name ->
+                val prefix = "<$name"
+                prefix.startsWith(suffix) || (suffix.startsWith(prefix) && TAG_TAIL.matches(suffix))
+            }
+            val couldBeClose = THINK_TAG_NAMES.any { name ->
+                val prefix = "</$name"
+                prefix.startsWith(suffix) ||
+                        (suffix.startsWith(prefix) && THINK_CLOSE_TAIL.matches(suffix))
+            }
+            return if (couldBeOpen || couldBeClose) suffix.length else 0
+        }
+    }
+
     companion object {
         /** 建连超时：主机不可达或端口错误时尽快失败，避免用户干等。 */
         private const val DEFAULT_CONNECT_TIMEOUT_MS = 10_000
@@ -412,6 +538,18 @@ class ModelClient(
         private const val DONE = "[DONE]"
         private const val ANTHROPIC_VERSION = "2023-06-01"
         private const val MAX_OUTPUT_TOKENS = 4_096
+        private val THINK_TAG_NAMES =
+            listOf("think", "thinking", "analysis", "reasoning", "reflection")
+        private val THINK_OPEN = Regex(
+            """<(think|thinking|analysis|reasoning|reflection)\b[^>]*>""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val THINK_CLOSE = Regex(
+            """</(think|thinking|analysis|reasoning|reflection)\s*>""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val TAG_TAIL = Regex("""^<[a-z]+(?:\s[^<>]*)?>?$""")
+        private val THINK_CLOSE_TAIL = Regex("""^</[a-z]+\s*>?$""")
 
         /** 错误摘要的字符上限：够看清原因，又不会把整段 HTML 塞进日志。 */
         private const val MAX_ERROR_DETAIL = 500
