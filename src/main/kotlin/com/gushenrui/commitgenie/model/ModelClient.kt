@@ -14,6 +14,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.BufferedReader
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
@@ -46,8 +47,6 @@ class ModelClient(
     ): String = withContext(Dispatchers.IO) {
         // connect 的回调不是挂起函数，先取出上下文供循环内检查取消
         val context = currentCoroutineContext()
-        val sink = StreamingCollector(protocol)
-        var thinkingNotified = false
         val body = requestBody(prompt)
         // readLine 阻塞时感知不到协程取消。子协程在取消时断开连接，让阻塞的读取立即抛出
         val activeConnection = AtomicReference<HttpURLConnection?>()
@@ -91,20 +90,8 @@ class ModelClient(
                         throw HttpErrorException(status, readErrorBody(connection))
                     }
                     request.reader.use { reader ->
-                        while (true) {
-                            context.ensureActive()
-                            val line = reader.readLine() ?: break
-                            val update = sink.consume(line)
-                            if (update.thinking && !thinkingNotified) {
-                                onThinking()
-                                thinkingNotified = true
-                            }
-                            if (update.hasContent) onDelta(sink.text)
-                        }
+                        readResponse(reader, onDelta, onThinking) { context.ensureActive() }
                     }
-                    val finalUpdate = sink.finish()
-                    if (finalUpdate.hasContent) onDelta(sink.text)
-                    sink.text
                 }
         } catch (e: IOException) {
             // 取消时断开连接也会表现为 IOException，此时应按取消处理而不是报错
@@ -118,6 +105,31 @@ class ModelClient(
             activeConnection.set(null)
             disconnectOnCancel.cancel()
         }
+    }
+
+    /** 与网络连接共用的读取循环：完成事件到达后不再等待 EOF。 */
+    internal fun readResponse(
+        reader: BufferedReader,
+        onDelta: (String) -> Unit = {},
+        onThinking: () -> Unit = {},
+        checkActive: () -> Unit = {},
+    ): String {
+        val sink = StreamingCollector(protocol)
+        var thinkingNotified = false
+        fun publish(update: StreamingCollector.Update) {
+            if (update.thinking && !thinkingNotified) {
+                onThinking()
+                thinkingNotified = true
+            }
+            if (update.hasContent) onDelta(sink.text)
+        }
+        while (!sink.completed) {
+            checkActive()
+            val line = reader.readLine() ?: break
+            publish(sink.consume(line))
+        }
+        publish(sink.finish())
+        return sink.text
     }
 
     /**
@@ -311,79 +323,121 @@ class ModelClient(
      * 2. 流内报错事件（HTTP 200 下通过 JSON 返回 `error` 对象）
      * 3. 网关忽略 `stream: true` 直接返回的单行或多行格式化 JSON
      */
-    private class StreamingCollector(private val protocol: ModelProtocol) {
+    internal class StreamingCollector(private val protocol: ModelProtocol) {
         data class Update(val hasContent: Boolean = false, val thinking: Boolean = false)
 
         private val buffer = StringBuilder()
         private val rawJsonFallback = StringBuilder()
         private val thinkFilter = StreamingThinkFilter()
         private var seenSseData = false
+        private val eventData = StringBuilder()
+        var completed = false
+            private set
 
         val text: String get() = buffer.toString()
 
-        /** 返回本次产生的正文与思考状态。 */
+        /** SSE 的多个 data 行先合并，空行分隔事件；普通 JSON 留到 EOF 解析。 */
         fun consume(rawLine: String): Update {
-            val line = rawLine.trim()
-            if (line.isEmpty()) return Update()
-            if (line.startsWith("data:")) {
+            if (completed) return Update()
+            if (rawLine.isEmpty()) return flushEvent()
+            if (rawLine.startsWith(":") || rawLine.startsWith("event:") ||
+                rawLine.startsWith("id:") || rawLine.startsWith("retry:")
+            ) {
                 seenSseData = true
-                val payload = line.removePrefix("data:").trim()
-                if (payload == DONE) return Update()
-                return appendDelta(payload)
+                return Update()
+            }
+            if (rawLine == "data" || rawLine.startsWith("data:")) {
+                seenSseData = true
+                val payload = rawLine.removePrefix("data").removePrefix(":").removePrefix(" ")
+                if (payload.trim() == DONE && protocol == ModelProtocol.OPENAI) {
+                    val update = flushEvent()
+                    completed = true
+                    return update
+                }
+                eventData.append(payload).append('\n')
+                return Update()
             }
             if (!seenSseData) {
-                // 单行整段 JSON 直接解析；若为多行格式化 JSON 则先暂存，留到 finish() 一次性解析
-                if (line.startsWith("{") && line.endsWith("}")) {
-                    val update = appendDelta(line)
-                    if (update.hasContent || update.thinking) return update
+                if (rawJsonFallback.length.toLong() + rawLine.length + 1 > MAX_FALLBACK_CHARS) {
+                    throw IOException("模型 JSON 响应过大，无法完整解析")
                 }
-                // 超限后不再累积：非流式整段 JSON 一旦解析失败，多攒的内容也不会被用到
-                if (rawJsonFallback.length < MAX_FALLBACK_CHARS) {
-                    rawJsonFallback.append(line).append('\n')
-                }
+                rawJsonFallback.append(rawLine).append('\n')
             }
             return Update()
         }
 
-        /** 流结束时先完成非流式 JSON 解析，再释放跨块暂存内容。 */
+        private fun flushEvent(): Update {
+            if (eventData.isEmpty()) return Update()
+            val payload = eventData.toString().trim()
+            eventData.clear()
+            if (payload.isEmpty()) return Update()
+            return appendDelta(payload, nonStreaming = false)
+        }
+
+        /** 只有明确完成的流或完整的普通 JSON 才能交付最终正文。 */
         fun finish(): Update {
-            if (!seenSseData && buffer.isEmpty() && rawJsonFallback.isNotEmpty()) {
-                val fullJson = rawJsonFallback.toString().trim()
-                if (fullJson.startsWith("{")) {
-                    val update = appendDelta(fullJson)
-                    val filtered = thinkFilter.finish()
-                    buffer.append(filtered)
-                    return Update(
-                        hasContent = update.hasContent || filtered.isNotEmpty(),
-                        thinking = update.thinking,
-                    )
-                }
+            val update = if (seenSseData) {
+                val pending = flushEvent()
+                if (!completed) throw IOException("模型响应提前结束，未收到完成标记，请重试")
+                pending
+            } else {
+                appendDelta(rawJsonFallback.toString(), nonStreaming = true)
             }
             val filtered = thinkFilter.finish()
-            if (filtered.isNotEmpty()) {
-                buffer.append(filtered)
-                return Update(hasContent = true)
-            }
-            return Update()
+            buffer.append(filtered)
+            return Update(update.hasContent || filtered.isNotEmpty(), update.thinking)
         }
 
-        private fun appendDelta(json: String): Update {
-            val root = runCatching { JsonParser.parseString(json).asJsonObject }.getOrNull()
-                ?: return Update()
-
-            // 识别 HTTP 200 流式传输中途或非流式 JSON 顶层返回的错误事件，交由外层 classifyFailure 统一归类
-            checkStreamError(root)?.let { errorRaw ->
-                throw HttpErrorException(-1, errorRaw)
+        private fun appendDelta(json: String, nonStreaming: Boolean): Update {
+            val root = try {
+                JsonParser.parseString(json).asJsonObject
+            } catch (e: RuntimeException) {
+                throw IOException("模型响应 JSON 损坏，无法确认结果完整性", e)
             }
+            checkStreamError(root)?.let { throw HttpErrorException(-1, it) }
+            try {
+                when (protocol) {
+                    ModelProtocol.OPENAI -> {
+                        val choice = root.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
+                        validateStopReason(
+                            choice?.get("finish_reason")?.stringOrNull(),
+                            setOf("stop")
+                        )
+                        if (nonStreaming && choice?.getAsJsonObject("message") == null) {
+                            throw IOException("模型未返回完整的消息对象")
+                        }
+                    }
 
-            val content = when (protocol) {
-                ModelProtocol.OPENAI -> extractOpenAiContent(root)
-                ModelProtocol.ANTHROPIC -> extractAnthropicContent(root)
+                    ModelProtocol.ANTHROPIC -> {
+                        val reason = root.get("stop_reason")?.stringOrNull()
+                            ?: root.getAsJsonObject("delta")?.get("stop_reason")?.stringOrNull()
+                        validateStopReason(reason, setOf("end_turn", "stop_sequence"))
+                        if (root.get("type")?.stringOrNull() == "message_stop") completed = true
+                        if (nonStreaming && root.getAsJsonArray("content") == null) {
+                            throw IOException("模型未返回完整的消息对象")
+                        }
+                    }
+                }
+                if (nonStreaming) completed = true
+                val content = when (protocol) {
+                    ModelProtocol.OPENAI -> extractOpenAiContent(root)
+                    ModelProtocol.ANTHROPIC -> extractAnthropicContent(root)
+                }
+                if (content.isNullOrEmpty()) return Update(thinking = isThinking(root))
+                val filtered = thinkFilter.append(content)
+                buffer.append(filtered.text)
+                return Update(filtered.text.isNotEmpty(), filtered.thinking || isThinking(root))
+            } catch (e: RuntimeException) {
+                throw IOException("模型响应结构不正确，无法确认结果完整性", e)
             }
-            if (content.isNullOrEmpty()) return Update(thinking = isThinking(root))
-            val filtered = thinkFilter.append(content)
-            buffer.append(filtered.text)
-            return Update(filtered.text.isNotEmpty(), filtered.thinking || isThinking(root))
+        }
+
+        private fun validateStopReason(reason: String?, accepted: Set<String>) {
+            if (reason == null || reason in accepted) return
+            if (reason == "length" || reason == "max_tokens") {
+                throw IOException("模型输出达到长度上限，结果不完整，请缩小勾选范围后重试")
+            }
+            throw IOException("模型未正常完成提交信息（停止原因：$reason），请重试")
         }
 
         private fun checkStreamError(root: JsonObject): String? {

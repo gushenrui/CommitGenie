@@ -16,7 +16,7 @@ Anthropic 兼容接口。
 - **随时取消**：生成中再次点击按钮或再次按 `⌃\` 即取消。
 - **富文本提示（rich tooltip）**：按钮在禁用态也会说明原因——未勾选文件、未配置模型、处于 Amend 模式等。
 - **Diff 精简与截断**：自绘 unified diff 头与 hunk，不输出 `IDEA additional info:`、文件版本号等平台附加信息；
-  按码点安全截断（不会把 emoji 劈成非法 UTF-8）。
+  仅保留预算内的完整 hunk，不切断行或 emoji。省略部分变更时会提示；连首个完整变更块都放不下时不发起生成。
 - **可编辑提示词**：内置提示词与原版语义一致，也可用 `$COMMIT_DIFF` / `$SAMPLE_COMMIT_MESSAGES`
   宏完全自定义。
 - **API Key 安全存储**：写入系统钥匙串，不落盘到配置文件。
@@ -94,6 +94,8 @@ Anthropic 兼容接口。
 - **请求层**：`HttpRequests.post(endpoint, "application/json")` 的第二个参数是 **Content-Type**，请求体在
   `connect` 回调中通过 `request.write(...)` 写入；解析标准 `data:` 事件流，同时兼容部分网关直接返回整段
   JSON 的行为。
+- **响应完整性**：流式响应需收到 OpenAI `[DONE]` 或 Anthropic `message_stop` 才视为结束，收到后不再等待连接关闭。
+  提前断流、损坏 JSON 或输出达到长度上限会报错并恢复原提交信息；非流式 JSON 不要求流式结束标记。
 - **错误细分**：回调内先读状态码，非 2xx 时主动读服务端响应体（自动处理 gzip 与 charset），
   摘要优先取 JSON 的 `error.message` 并截断到 500 字符。413 直接判定为请求体过大；400 结合
   文案关键词判断，401/403 等鉴权失败不参与，避免误报。前者提示缩小勾选范围，超时则提示稍后重试。

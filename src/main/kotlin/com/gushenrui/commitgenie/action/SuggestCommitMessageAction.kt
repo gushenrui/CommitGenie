@@ -189,7 +189,7 @@ class SuggestCommitMessageAction : AnAction() {
         result?.let { notifyFailure(project, it) }
     }
 
-    /** 把服务返回的失败原因转换成用户可见的提示；成功不提示。 */
+    /** 把服务返回的失败原因转换成用户可见的提示；成功但 diff 被截断时也提示。 */
     private fun notifyFailure(project: Project, result: CommitMessageGenerator.Result) {
         when (result) {
             CommitMessageGenerator.Result.NotConfigured ->
@@ -222,7 +222,12 @@ class SuggestCommitMessageAction : AnAction() {
                 )
             }
 
-            is CommitMessageGenerator.Result.Success -> Unit
+            is CommitMessageGenerator.Result.Success -> if (result.diffTruncated) {
+                Notifications.warn(
+                    project,
+                    "部分变更因 Diff 字符上限被省略，提交信息仅依据保留的完整变更块生成。请检查遗漏内容，或调整勾选范围和字符上限后重试。"
+                )
+            }
         }
     }
 

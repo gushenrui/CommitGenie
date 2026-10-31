@@ -8,6 +8,26 @@
 
 ## 结论
 
+### 第二阶段修复进度（2026-10-31）
+
+- **B03 已修复**：以完整 hunk 为写入单位，文件头与首个 hunk 原子写入。首个放不下的 hunk 会停止后续
+  patch 构建，不留下不完整 hunk 或孤立文件头。恰好达到上限且没有遗漏时不报告截断。二进制头与索引也作为整体写入。
+- diff 构建返回正文与截断标记；部分变更被省略时，提示词明确限制总结范围，生成成功后向用户提示省略情况。如果连首个完整变更块都无法容纳，则提示调整范围或上限，不调用模型。
+- **B05 已修复**：SSE 按事件合并 data 行，OpenAI `[DONE]` / Anthropic `message_stop` 到达后结束读取；未收到结束标记的
+  EOF、损坏 JSON、异常结构和非正常停止原因均报错，沿用现有失败流程恢复原提交信息。
+- `length` / `max_tokens` 被识别为输出不完整。普通单行或多行 JSON 仍可兼容，对其显式停止原因同样校验。普通
+  JSON 未提供停止原因时保留兼容性，不强制要求 SSE 标记；Anthropic 多内容块提取问题 B06 留待第三阶段。
+- 新增 `DiffBuilderTest`（9 项）和 `ModelResponseTest`（14
+  项），覆盖精确预算、超长单行、多个文件/hunk、emoji、无换行标记、惰性停止、完成后不再读取、断流、错误事件、长度超限、多行
+  SSE 与普通 JSON。
+- 验证：`./gradlew test --offline --console=plain` 编译与测试通过， **31 项测试全部通过，无跳过**
+  ；差异检查通过。读取循环使用到达结束标记后禁止再读取的替身验证，不依赖网络时序；未进行真实网关或 IDE
+  交互测试。
+-
+协议字段参考：[OpenAI 流式事件](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events)、[Anthropic 流式消息](https://platform.claude.com/docs/en/build-with-claude/streaming)。
+
+截至第二阶段，B01、B02、B03、B05 已修复；B04、B06、B07、B08 尚待处理。下文保留初始审查及第一阶段记录。
+
 ### 第一阶段修复进度（2026-10-31）
 
 - **B01 已修复**：密码框独立记录加载基线与用户编辑状态；未加载且未编辑时不保存密钥，显式清空仍可删除。旧值回填不会覆盖用户编辑，保存后同步比较基线。

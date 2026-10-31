@@ -26,50 +26,45 @@ import java.io.StringWriter
  */
 object DiffBuilder {
 
-    suspend fun buildDiff(project: Project, changes: List<Change>, maxChars: Int): String =
+    data class BuiltDiff(val text: String, val truncated: Boolean)
+
+    suspend fun buildDiff(project: Project, changes: List<Change>, maxChars: Int): BuiltDiff =
         withContext(Dispatchers.IO) {
             val baseDir = PatchWriter.calculateBaseDirForWritingPatch(project, changes)
             val builder = CreatePatchCommitExecutor.DefaultPatchBuilder(project)
-            // maxChars <= 0 表示不限制，与 truncateByCodePoint 的约定保持一致
-            val out = LimitedText(if (maxChars > 0) maxChars else Int.MAX_VALUE)
-            var skipped = 0
-
-            for (change in constrainBinaryChanges(changes)) {
-                // 已达到上限时不再构建后续 patch，避免继续读取并渲染大文件
-                if (out.isFull) {
-                    skipped++
-                    continue
-                }
-                try {
-                    builder.buildPatches(baseDir, listOf(change), false, true)
-                        .forEach { patch -> render(baseDir, patch, out) }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    LOG.warn("构建变更补丁失败: ${change.virtualFile?.path ?: change}", e)
+            // 惰性构建：首个放不下的 hunk 出现后，不再读取后续文件。
+            val patches = sequence {
+                for (change in changes) {
+                    val built = try {
+                        builder.buildPatches(
+                            baseDir,
+                            constrainBinaryChanges(listOf(change)),
+                            false,
+                            true
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        LOG.warn("构建变更补丁失败: ${change.virtualFile?.path ?: change}", e)
+                        emptyList()
+                    }
+                    yieldAll(built)
                 }
             }
-
-            if (skipped > 0) {
-                LOG.info("diff 已达到 $maxChars 字符上限，跳过 $skipped 个文件")
-            }
-            // 收尾保险：整行追加不会劈开代理对，这里只兜住外部传入的异常上限
-            truncateByCodePoint(out.toString(), maxChars)
+            renderPatches(baseDir, patches, maxChars)
         }
 
-    /**
-     * 按码点截断，避免把代理对（如 emoji）劈成孤立代理。
-     *
-     * 孤立代理无法编码为合法 UTF-8，会导致服务端解析 JSON 失败并返回 400。
-     * 渲染阶段已按上限停止，这里同时兜住「恰好停在代理对中间」的边界。
-     */
-    private fun truncateByCodePoint(text: String, maxChars: Int): String {
-        if (maxChars <= 0) return text
-        var end = minOf(text.length, maxChars)
-        if (end > 0 && Character.isHighSurrogate(text[end - 1])) {
-            end--
+    internal fun renderPatches(
+        baseDir: java.nio.file.Path,
+        patches: Sequence<FilePatch>,
+        maxChars: Int,
+    ): BuiltDiff {
+        val out = LimitedText(if (maxChars > 0) maxChars else Int.MAX_VALUE)
+        for (patch in patches) {
+            render(baseDir, patch, out)
+            if (out.truncated) break
         }
-        return if (end == text.length) text else text.substring(0, end)
+        return BuiltDiff(out.toString(), out.truncated)
     }
 
     private fun render(
@@ -100,26 +95,34 @@ object DiffBuilder {
             append("+++ ").append(if (patch.isDeletedFile) DEV_NULL else "b/$afterPath")
                 .append('\n')
         }
-        // 连文件头都放不下时直接结束，不留下无主的片段
-        if (!out.appendIfFits(fileHeader)) return
-        for (hunk in patch.hunks) {
-            // 整块 hunk 放不下时不写残缺头部，避免模型读到结构不完整的 diff
-            val header = "@@ -${range(hunk.startLineBefore, hunk.endLineBefore)}" +
-                    " +${range(hunk.startLineAfter, hunk.endLineAfter)} @@\n"
-            if (!out.appendIfFits(header)) return
+        if (patch.hunks.isEmpty()) {
+            // 空文件新增/删除、纯重命名可以只有文件头。
+            out.appendIfFits(fileHeader)
+            return
+        }
+        for ((index, hunk) in patch.hunks.withIndex()) {
+            // 文件头与首个 hunk 一起提交；后续 hunk 也必须完整放下。
+            val unit = LimitedText(out.remaining)
+            if (index == 0) unit.appendIfFits(fileHeader)
+            unit.appendIfFits(
+                "@@ -${range(hunk.startLineBefore, hunk.endLineBefore)}" +
+                        " +${range(hunk.startLineAfter, hunk.endLineAfter)} @@\n"
+            )
             for (line in hunk.lines) {
+                if (unit.truncated) break
                 val text = buildString {
                     append(prefix(line.type)).append(line.text)
-                    if (line.isSuppressNewLine) {
-                        append('\n').append(NO_NEWLINE_SIGNATURE)
-                    }
+                    if (line.isSuppressNewLine) append('\n').append(NO_NEWLINE_SIGNATURE)
                     append('\n')
                 }
-                // 单行放不下说明已到上限，直接结束，保证输出停在完整行
-                if (!out.appendIfFits(text)) return
+                unit.appendIfFits(text)
             }
+            if (unit.truncated) {
+                out.truncated = true
+                return
+            }
+            out.appendIfFits(unit.toString())
         }
-        out.appendIfFits("\n")
     }
 
     private fun renderBinaryPatch(
@@ -129,13 +132,12 @@ object DiffBuilder {
     ) {
         val writer = StringWriter()
         GitPatchWriter.writeGitHeader(writer, baseDir, patch, "\n")
-        // 二进制补丁的头部同样整段写入，放不下就停止，避免后续哈希白算
-        if (!out.appendIfFits(writer.toString())) return
-        val index = buildString {
+        val content = buildString {
+            append(writer)
             append("index ").append(sha1(patch.beforeContent))
                 .append("..").append(sha1(patch.afterContent)).append("\n\n")
         }
-        out.appendIfFits(index)
+        out.appendIfFits(content)
     }
 
     private fun prefix(type: PatchLine.Type): Char = when (type) {
@@ -191,13 +193,16 @@ object DiffBuilder {
     private class LimitedText(private val limit: Int) {
         private val buffer = StringBuilder(INITIAL_CAPACITY)
 
-        /** 仅在有限额且已用完时视为已满；不限额时始终可继续追加。 */
-        val isFull: Boolean get() = limit != Int.MAX_VALUE && buffer.length >= limit
+        var truncated = false
+        val remaining: Int get() = limit - buffer.length
 
-        /** 仅当整段内容放得下时才追加，保证截断处不会留下半行。 */
+        /** 拒绝一次追加后即停止；从不输出半行或半个原子单元。 */
         fun appendIfFits(value: String): Boolean {
-            if (value.isEmpty()) return !isFull
-            if (limit != Int.MAX_VALUE && buffer.length + value.length > limit) return false
+            if (truncated) return false
+            if (value.length > remaining) {
+                truncated = true
+                return false
+            }
             buffer.append(value)
             return true
         }

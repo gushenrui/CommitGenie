@@ -35,7 +35,7 @@ class CommitMessageGenerator(
 
     /** 生成结果，失败时区分可指导用户操作的场景。 */
     sealed interface Result {
-        data class Success(val message: String) : Result
+        data class Success(val message: String, val diffTruncated: Boolean = false) : Result
         data object NotConfigured : Result
         data object EmptyDiff : Result
         data class PayloadTooLarge(val cause: Throwable) : Result
@@ -73,7 +73,10 @@ class CommitMessageGenerator(
             if (apiKey.isBlank() || !settings.isConfigured) return Result.NotConfigured
 
             val diff = DiffBuilder.buildDiff(project, changes, settings.state.maxDiffChars)
-            if (diff.isBlank()) return Result.EmptyDiff
+            if (diff.text.isBlank()) {
+                if (diff.truncated) throw IOException("Diff 上限不足以容纳完整变更块，请缩小勾选范围或调大 Diff 最大字符数")
+                return Result.EmptyDiff
+            }
 
             val samples = if (settings.state.includeHistory) {
                 VcsChanges.sampleCommitMessages(
@@ -85,7 +88,8 @@ class CommitMessageGenerator(
                 emptyList()
             }
 
-            val prompt = PromptBuilder.build(samples, diff, settings.state)
+            val prompt = PromptBuilder.build(samples, diff.text, settings.state) +
+                    if (diff.truncated) "\nNOTE: Some changes were omitted due to the diff size limit. Summarize only the provided changes." else ""
             val client = ModelClient(
                 baseUrl = settings.state.baseUrl,
                 apiKey = apiKey,
@@ -104,7 +108,7 @@ class CommitMessageGenerator(
                 )
             )
             if (text.isEmpty()) Result.Failed(IOException("模型返回空内容")) else Result.Success(
-                text
+                text, diff.truncated
             )
         } catch (e: CancellationException) {
             // 取消必须继续向上传播，否则调用方无法区分取消与失败
