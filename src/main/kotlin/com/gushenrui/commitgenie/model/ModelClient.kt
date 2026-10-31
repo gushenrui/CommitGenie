@@ -331,6 +331,7 @@ class ModelClient(
         private val thinkFilter = StreamingThinkFilter()
         private var seenSseData = false
         private val eventData = StringBuilder()
+        private var receivedContentChars = 0
         var completed = false
             private set
 
@@ -353,6 +354,9 @@ class ModelClient(
                     val update = flushEvent()
                     completed = true
                     return update
+                }
+                if (eventData.length.toLong() + payload.length + 1 > MAX_FALLBACK_CHARS) {
+                    throw IOException("模型流式事件过大，已停止读取")
                 }
                 eventData.append(payload).append('\n')
                 return Update()
@@ -424,6 +428,10 @@ class ModelClient(
                     ModelProtocol.ANTHROPIC -> extractAnthropicContent(root)
                 }
                 if (content.isNullOrEmpty()) return Update(thinking = isThinking(root))
+                if (content.length > MAX_OUTPUT_CHARS - receivedContentChars) {
+                    throw IOException("模型输出超过 $MAX_OUTPUT_CHARS 字符，已停止生成，请缩小勾选范围后重试")
+                }
+                receivedContentChars += content.length
                 val filtered = thinkFilter.append(content)
                 buffer.append(filtered.text)
                 return Update(filtered.text.isNotEmpty(), filtered.thinking || isThinking(root))
@@ -594,6 +602,7 @@ class ModelClient(
         private const val DONE = "[DONE]"
         private const val ANTHROPIC_VERSION = "2023-06-01"
         private const val MAX_OUTPUT_TOKENS = 4_096
+        internal const val MAX_OUTPUT_CHARS = 65_536
         private val THINK_TAG_NAMES =
             listOf("think", "thinking", "analysis", "reasoning", "reflection")
         private val THINK_OPEN = Regex(

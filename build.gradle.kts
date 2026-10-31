@@ -19,7 +19,11 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     intellijPlatform {
         // 复用本机已安装的 Android Studio，避免下载完整 IDE 发行包
-        local("/Applications/Android Studio.app")
+        local(
+            providers.gradleProperty("idePath")
+                .orElse(providers.environmentVariable("COMMITGENIE_IDE_PATH"))
+                .orElse("/Applications/Android Studio.app")
+        )
         bundledPlugin("Git4Idea")
         // local() 默认只暴露平台 API 层 jar，patch 构建、VCS 日志等实现层模块需显式声明
         bundledModule("intellij.platform.vcs.impl")

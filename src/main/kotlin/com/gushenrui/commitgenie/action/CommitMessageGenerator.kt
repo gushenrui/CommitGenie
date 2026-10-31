@@ -6,12 +6,15 @@ import com.gushenrui.commitgenie.model.ModelClient
 import com.gushenrui.commitgenie.model.ModelOutputCleaner
 import com.gushenrui.commitgenie.prompt.PromptBuilder
 import com.gushenrui.commitgenie.settings.CommitGenieSettings
+import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.changes.Change
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.SocketTimeoutException
 
@@ -69,32 +72,35 @@ class CommitMessageGenerator(
     ): Result {
         return try {
             // 先等密钥加载结束再判断配置，避免读到尚未填充的缓存
-            val apiKey = settings.awaitApiKey()
-            if (apiKey.isBlank() || !settings.isConfigured) return Result.NotConfigured
+            settings.awaitApiKey()
+            val snapshot = withContext(Dispatchers.EDT) { settings.generationSnapshot() }
+            if (!snapshot.isConfigured) return Result.NotConfigured
+            val config = snapshot.config
 
-            val diff = DiffBuilder.buildDiff(project, changes, settings.state.maxDiffChars)
+            val diff = DiffBuilder.buildDiff(project, changes, config.maxDiffChars)
             if (diff.text.isBlank()) {
                 if (diff.truncated) throw IOException("Diff 上限不足以容纳完整变更块，请缩小勾选范围或调大 Diff 最大字符数")
                 return Result.EmptyDiff
             }
 
-            val samples = if (settings.state.includeHistory) {
+            val samples = if (config.includeHistory) {
                 VcsChanges.sampleCommitMessages(
                     project,
                     changes,
-                    settings.state.sampleCommitCount,
+                    config.sampleCommitCount,
                 )
             } else {
                 emptyList()
             }
 
-            val prompt = PromptBuilder.build(samples, diff.text, settings.state) +
+            val prompt = PromptBuilder.build(samples, diff.text, config) +
                     if (diff.truncated) "\nNOTE: Some changes were omitted due to the diff size limit. Summarize only the provided changes." else ""
+            PromptBuilder.checkBudget(prompt)
             val client = ModelClient(
-                baseUrl = settings.state.baseUrl,
-                apiKey = apiKey,
-                model = settings.state.model,
-                protocol = settings.state.protocol,
+                baseUrl = config.baseUrl,
+                apiKey = snapshot.apiKey,
+                model = config.model,
+                protocol = config.protocol,
             )
 
             // 增量回调提前统一换行并去掉开头的空行，避免输入框先闪出空白；

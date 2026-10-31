@@ -132,6 +132,15 @@ class CommitGenieSettings internal constructor(
         apiKeyLoaded.complete(trimmed)
     }
 
+    /** 在 EDT 上调用，与设置页 apply 串行；副本不再跟随后续设置编辑。 */
+    internal fun generationSnapshot(): GenerationSnapshot =
+        GenerationSnapshot(myState.copy(), apiKey.orEmpty())
+
+    internal class GenerationSnapshot(val config: State, val apiKey: String) {
+        val isConfigured: Boolean
+            get() = config.baseUrl.isNotBlank() && config.model.isNotBlank() && apiKey.isNotBlank()
+    }
+
     val isConfigured: Boolean
         get() = myState.baseUrl.isNotBlank() &&
                 myState.model.isNotBlank() &&

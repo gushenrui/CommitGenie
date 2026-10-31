@@ -125,9 +125,9 @@ class SuggestCommitMessageAction : AnAction() {
                 CommitMessageLoading.start(messageUi).also { running.snapshot = it }
             } ?: return@launch
 
-            // 无界通道不阻塞网络读取；渲染结束后正常排空，避免最后一段内容被丢弃
-            val partial = Channel<String>(Channel.UNLIMITED)
-            val thinking = Channel<Unit>(Channel.UNLIMITED)
+            // 增量是完整文本快照，只保留最新值，避免 EDT 忙碌时积压重复前缀。
+            val partial = Channel<String>(Channel.CONFLATED)
+            val thinking = Channel<Unit>(Channel.CONFLATED)
             val renderer = launch(Dispatchers.EDT) {
                 for (text in partial) {
                     if (project.isDisposed || project.getUserData(KEY) !== running) break

@@ -6,6 +6,57 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PromptBuilderTest {
+    @Test
+    fun `individual history samples are bounded without splitting emoji`() {
+        val markerLength = "… [sample truncated]".length
+        val sample =
+            "x".repeat(PromptBuilder.MAX_SAMPLE_CHARS - markerLength - 1) + "😀" + "x".repeat(100)
+        val result = build(PromptBuilder.MACRO_SAMPLES, listOf(sample), "")
+        assertTrue(result.contains("[sample truncated]"))
+        assertTrue(result.length <= PromptBuilder.MAX_SAMPLE_CHARS + 100)
+        assertTrue(result.none { Character.isSurrogate(it) })
+    }
+
+    @Test
+    fun `aggregate history budget includes formatting`() {
+        val result = build(PromptBuilder.MACRO_SAMPLES, List(50) { "x".repeat(10000) }, "")
+        assertTrue(result.length <= PromptBuilder.MAX_SAMPLES_CHARS)
+        assertTrue(result.endsWith("==== End of examples ===="))
+    }
+
+    @Test
+    fun `oversized template is rejected before expansion`() {
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) {
+            build("x".repeat(PromptBuilder.MAX_TEMPLATE_CHARS + 1), emptyList(), "")
+        }
+    }
+
+    @Test
+    fun `repeated macros cannot exceed the final budget`() {
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) {
+            build(PromptBuilder.MACRO_DIFF.repeat(10), emptyList(), "x".repeat(60000))
+        }
+    }
+
+    @Test
+    fun `exact prompt budget is accepted but appended notices are checked`() {
+        val result =
+            build(PromptBuilder.MACRO_DIFF, emptyList(), "x".repeat(PromptBuilder.MAX_PROMPT_CHARS))
+        assertEquals(PromptBuilder.MAX_PROMPT_CHARS, result.length)
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) {
+            PromptBuilder.checkBudget(
+                result + "x"
+            )
+        }
+    }
+
+    @Test
+    fun `default prompt overhead counts toward final budget`() {
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) {
+            build("", emptyList(), "x".repeat(PromptBuilder.MAX_PROMPT_CHARS))
+        }
+    }
+
     private val diffMacro = PromptBuilder.MACRO_DIFF
     private val samplesMacro = PromptBuilder.MACRO_SAMPLES
 

@@ -182,6 +182,24 @@ class ModelResponseTest {
         }
     }
 
+    @Test
+    fun `output limit applies across chunks and allows exact boundary`() {
+        fun stream(extra: Boolean): String {
+            val chunk = "x".repeat(ModelClient.MAX_OUTPUT_CHARS / 2)
+            val data = "data: {\"choices\":[{\"delta\":{\"content\":\"$chunk\"}}]}\n\n"
+            return data + data + (if (extra) delta + "\n\n" else "") + "data: [DONE]\n"
+        }
+        assertEquals(ModelClient.MAX_OUTPUT_CHARS, read(stream(false)).length)
+        assertTrue(fails(stream(true)).message!!.contains("字符"))
+    }
+
+    @Test
+    fun `non-streaming output and oversized SSE events are bounded`() {
+        val content = "x".repeat(ModelClient.MAX_OUTPUT_CHARS + 1)
+        fails("{\"choices\":[{\"message\":{\"content\":\"$content\"}}]}")
+        assertTrue(fails("data: " + "x".repeat(1_048_576)).message!!.contains("事件过大"))
+    }
+
     private fun noFurtherReads(lines: List<String>): BufferedReader =
         object : BufferedReader(StringReader("")) {
             private val iterator = lines.iterator()

@@ -38,6 +38,19 @@ Anthropic 兼容接口。
 ./install.sh --build-only # 只打包，产物在 build/distributions/*.zip
 ```
 
+IDE 不在默认路径时，可设置 `COMMITGENIE_IDE_PATH`；用户安装目录可通过 `COMMITGENIE_PLUGIN_DIR` 指定。
+用户插件目录不存在时会自动创建，目标不可写时会在构建前退出。`--build-only` 不创建安装目录。
+
+```bash
+COMMITGENIE_IDE_PATH="/Applications/Android Studio Preview.app" ./install.sh
+COMMITGENIE_PLUGIN_DIR="/path/to/user/plugins" ./install.sh
+./gradlew test -PidePath="/path/to/IDE"
+```
+
+Gradle 的 IDE 路径优先级为 `-PidePath`、`COMMITGENIE_IDE_PATH`、默认安装路径；构建仍需兼容的 build 262
+IDE 与 JBR 25。
+安装脚本仍面向 macOS 应用包布局；其他系统可通过 Gradle 指定本地 IDE 路径构建，安装需自行完成。
+
 安装完成后重启 Android Studio。验证方式：
 
 - `Settings → Tools → CommitGenie` 出现配置页；
@@ -69,6 +82,16 @@ Anthropic 兼容接口。
 - `$SAMPLE_COMMIT_MESSAGES`：采样到的历史提交信息
 
 宏只在原模板中展开；历史提交和 diff 中出现的同名宏按字面量保留。
+
+为控制请求大小，历史样本每条最多 2,000 字符，含分隔标题的样本总量最多 12,000 字符；样本过长时安全截断并标注。
+自定义模板最多 32,000 字符，展开后的完整提示词（含截断说明）最多 550,000 字符，超出时提示调整而不发送请求。
+这些是本地字符预算，并不保证符合每个模型的 token 上限。
+
+每次生成使用启动时取得的配置与密钥副本，中途修改配置只影响后续生成。流式 UI 仅保留最新文本快照；
+累计正文增量超过 65,536 字符时停止生成并恢复原提交信息，避免长输出持续占用内存。
+
+回归测试：`./gradlew test`；安装脚本测试：`python3 -m unittest discover -s tests -v`（使用临时目录和模拟构建，不安装到真实
+IDE）。
 
 ## 使用
 

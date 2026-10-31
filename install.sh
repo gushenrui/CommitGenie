@@ -10,24 +10,6 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_PATH="/Applications/Android Studio.app"
-JBR_HOME="$APP_PATH/Contents/jbr/Contents/Home"
-
-# 用户插件目录随 IDE 版本变化，这里从 product-info.json 读取，避免写死版本号
-PRODUCT_INFO="$APP_PATH/Contents/Resources/product-info.json"
-if [[ ! -f "$PRODUCT_INFO" ]]; then
-    echo "错误：未找到 $PRODUCT_INFO，请确认 Android Studio 安装路径" >&2
-    exit 1
-fi
-DATA_DIR_NAME="$(sed -n 's/.*"dataDirectoryName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PRODUCT_INFO")"
-if [[ -z "$DATA_DIR_NAME" ]]; then
-    echo "错误：无法从 product-info.json 解析 dataDirectoryName" >&2
-    exit 1
-fi
-
-USER_PLUGIN_DIR="$HOME/Library/Application Support/Google/$DATA_DIR_NAME/plugins"
-SYSTEM_PLUGIN_DIR="$APP_PATH/Contents/plugins"
-
 TARGET_SYSTEM=0
 BUILD_ONLY=0
 for arg in "$@"; do
@@ -38,6 +20,41 @@ for arg in "$@"; do
         *)            echo "未知参数：$arg" >&2; exit 1 ;;
     esac
 done
+
+# 与 Gradle 使用同一安装路径；路径含空格时也作为单个参数传递。
+APP_PATH="${COMMITGENIE_IDE_PATH:-/Applications/Android Studio.app}"
+JBR_HOME="$APP_PATH/Contents/jbr/Contents/Home"
+
+# 只打包时不读取安装目标，也不创建用户插件目录。
+if [[ $BUILD_ONLY -eq 0 ]]; then
+    if [[ $TARGET_SYSTEM -eq 1 ]]; then
+        INSTALL_ROOT="$APP_PATH/Contents/plugins"
+    else
+        if [[ -n "${COMMITGENIE_PLUGIN_DIR:-}" ]]; then
+            INSTALL_ROOT="$COMMITGENIE_PLUGIN_DIR"
+        else
+            PRODUCT_INFO="$APP_PATH/Contents/Resources/product-info.json"
+            if [[ ! -f "$PRODUCT_INFO" ]]; then
+                echo "错误：未找到 $PRODUCT_INFO，请确认 IDE 安装路径" >&2
+                exit 1
+            fi
+            DATA_DIR_NAME="$(sed -n 's/.*"dataDirectoryName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PRODUCT_INFO")"
+            if [[ -z "$DATA_DIR_NAME" ]]; then
+                echo "错误：无法解析 dataDirectoryName" >&2
+                exit 1
+            fi
+            INSTALL_ROOT="$HOME/Library/Application Support/Google/$DATA_DIR_NAME/plugins"
+        fi
+        if ! mkdir -p "$INSTALL_ROOT"; then
+            echo "错误：无法创建用户插件目录 $INSTALL_ROOT" >&2
+            exit 1
+        fi
+    fi
+    if [[ ! -d "$INSTALL_ROOT" || ! -w "$INSTALL_ROOT" ]]; then
+        echo "错误：插件目录 $INSTALL_ROOT 不存在或不可写，请检查目录权限或使用用户安装模式。" >&2
+        exit 1
+    fi
+fi
 
 # 构建使用 IDE 自带的 JBR，保证与插件目标字节码一致
 if [[ -x "$JBR_HOME/bin/java" ]]; then
@@ -51,7 +68,7 @@ rm -rf build/distributions
 echo "==> 打包插件"
 set +e
 # 构建阶段看门狗：编译任务若长时间无任何输出，多半是卡死而非变慢
-./gradlew buildPlugin --console=plain &
+./gradlew buildPlugin --console=plain "-PidePath=$APP_PATH" &
 BUILD_PID=$!
 WATCHDOG_SECONDS=${WATCHDOG_SECONDS:-600}
 ( sleep "$WATCHDOG_SECONDS"; kill -0 "$BUILD_PID" 2>/dev/null && {
@@ -90,17 +107,6 @@ echo "    产物：$ZIP_PATH"
 if [[ $BUILD_ONLY -eq 1 ]]; then
     echo "==> 仅打包，跳过安装"
     exit 0
-fi
-
-if [[ $TARGET_SYSTEM -eq 1 ]]; then
-    INSTALL_ROOT="$SYSTEM_PLUGIN_DIR"
-else
-    INSTALL_ROOT="$USER_PLUGIN_DIR"
-fi
-
-if [[ ! -w "$INSTALL_ROOT" ]]; then
-    echo "错误：$INSTALL_ROOT 不可写。可改用 ./install.sh 安装到用户插件目录。" >&2
-    exit 1
 fi
 
 echo "==> 安装到 $INSTALL_ROOT"
