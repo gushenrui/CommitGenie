@@ -5,7 +5,6 @@ import com.gushenrui.commitgenie.prompt.PromptBuilder
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.ui.Messages
-import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.dsl.builder.Align
 import com.intellij.ui.dsl.builder.Cell
@@ -24,7 +23,6 @@ import javax.swing.JComponent
 class CommitGenieConfigurable : Configurable {
 
     private var ui: DialogPanel? = null
-    private var apiKeyField: Cell<JBPasswordField>? = null
     private var promptField: Cell<JBTextArea>? = null
 
     private var baseUrl = ""
@@ -36,11 +34,7 @@ class CommitGenieConfigurable : Configurable {
     private var language = ""
     private var customPrompt = ""
 
-    /** 已加载的密钥基线，用于判断密码框是否被用户改动。 */
-    private var loadedApiKey = ""
-
-    /** 密钥是否已填入密码框；未完成前不把空值判为修改。 */
-    private var apiKeyFilled = false
+    private var apiKeyEditor: ApiKeyEditor? = null
 
     /** 后台密钥回调是否仍在等待；UI 释放后丢弃结果。 */
     private var disposed = false
@@ -70,7 +64,9 @@ class CommitGenieConfigurable : Configurable {
                 row("API Key:") {
                     // 密码框不保留明文 text；内容由后台加载完成后回填
                     passwordField()
-                        .also { apiKeyField = it }
+                        .also {
+                            apiKeyEditor = ApiKeyEditor(it.component)
+                        }
                         .resizableColumn()
                         .comment("保存在系统钥匙串中，不会写入项目文件")
                 }
@@ -137,9 +133,7 @@ class CommitGenieConfigurable : Configurable {
 
     override fun isModified(): Boolean {
         val panel = ui ?: return false
-        // 密钥未加载完成时以空串为基线，用户手动输入同样算修改
-        val baseline = if (apiKeyFilled) loadedApiKey else ""
-        return panel.isModified() || currentApiKey() != baseline
+        return panel.isModified() || apiKeyEditor?.isModified == true
     }
 
     override fun apply() {
@@ -153,7 +147,7 @@ class CommitGenieConfigurable : Configurable {
         settings.state.includeHistory = includeHistory
         settings.state.language = language.trim().ifEmpty { CommitGenieSettings.LANGUAGE_AUTO }
         settings.state.customPrompt = customPrompt
-        settings.saveApiKey(currentApiKey())
+        apiKeyEditor?.apply(settings::saveApiKey)
     }
 
     override fun reset() {
@@ -170,32 +164,19 @@ class CommitGenieConfigurable : Configurable {
         ui?.reset()
         // reset 必须恢复已保存的密钥；尚未加载时由后台回调补充
         val pendingKey = settings.apiKey
-        apiKeyFilled = pendingKey != null
-        loadedApiKey = pendingKey.orEmpty()
-        apiKeyField?.component?.text = loadedApiKey
+        apiKeyEditor?.reset(pendingKey)
         if (pendingKey == null) {
-            settings.loadApiKey { key -> fillApiKeyIfUntouched(key) }
-        }
-    }
-
-    /** 回填已加载的密钥，并同步修改判断的基线。 */
-    private fun fillApiKey(key: String) {
-        loadedApiKey = key
-        apiKeyFilled = true
-        apiKeyField?.component?.text = key
-    }
-
-    /** 设置页已关闭或用户已输入内容时，不覆盖密码框。 */
-    private fun fillApiKeyIfUntouched(key: String) {
-        if (!disposed && !apiKeyFilled && currentApiKey().isEmpty()) {
-            fillApiKey(key)
+            val editor = apiKeyEditor
+            settings.loadApiKey { key ->
+                if (!disposed && apiKeyEditor === editor) editor?.fillIfUntouched(key)
+            }
         }
     }
 
     override fun disposeUIResources() {
         disposed = true
         ui = null
-        apiKeyField = null
+        apiKeyEditor = null
         promptField = null
     }
 
@@ -214,9 +195,6 @@ class CommitGenieConfigurable : Configurable {
         area.text = EXAMPLE_PROMPT
         area.caretPosition = 0
     }
-
-    private fun currentApiKey(): String =
-        apiKeyField?.component?.password?.concatToString().orEmpty()
 
     private companion object {
         val SAMPLE_COUNT_RANGE = 0..50

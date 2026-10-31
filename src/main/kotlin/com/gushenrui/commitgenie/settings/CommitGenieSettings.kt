@@ -13,6 +13,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executor
 import kotlin.coroutines.resume
 
 /**
@@ -21,7 +22,20 @@ import kotlin.coroutines.resume
  * 除 API Key 之外的字段写入 XML；API Key 单独存入系统钥匙串，避免明文落盘。
  */
 @State(name = "CommitGenieSettings", storages = [Storage("commitgenie.xml")])
-class CommitGenieSettings : PersistentStateComponent<CommitGenieSettings.State> {
+class CommitGenieSettings internal constructor(
+    private val readKey: () -> String?,
+    private val writeKey: (String) -> Unit,
+    private val executor: Executor,
+) : PersistentStateComponent<CommitGenieSettings.State> {
+
+    constructor() : this(
+        readKey = { PasswordSafe.instance.getPassword(credentialAttributes()) },
+        writeKey = { value ->
+            val credentials = value.takeIf { it.isNotEmpty() }?.let { Credentials("", it) }
+            PasswordSafe.instance.set(credentialAttributes(), credentials)
+        },
+        executor = Executor { ApplicationManager.getApplication().executeOnPooledThread(it) },
+    )
 
     data class State(
         var baseUrl: String = DEFAULT_BASE_URL,
@@ -38,6 +52,9 @@ class CommitGenieSettings : PersistentStateComponent<CommitGenieSettings.State> 
 
     private val apiKeyLock = Any()
 
+    // 链只在 apiKeyLock 内追加；下一次写入必须等上一次（包括失败处理）结束。
+    private var pendingWrite = CompletableFuture.completedFuture<Void>(null)
+
     /** 钥匙串读取完成后才有值；EDT 只读取这个缓存，不触发系统调用。 */
     @Volatile
     private var cachedApiKey: String? = null
@@ -50,9 +67,9 @@ class CommitGenieSettings : PersistentStateComponent<CommitGenieSettings.State> 
 
     init {
         // 应用启动即在后台预读，避免首次刷新工具栏或打开设置页时卡住 EDT
-        ApplicationManager.getApplication().executeOnPooledThread {
+        executor.execute {
             val loaded = try {
-                PasswordSafe.instance.getPassword(credentialAttributes()).orEmpty()
+                readKey().orEmpty()
             } catch (e: Exception) {
                 // 钥匙串不可用时也要放行等待方，否则设置页和生成任务会一直挂起
                 LOG.warn("读取 API Key 失败", e)
@@ -103,17 +120,16 @@ class CommitGenieSettings : PersistentStateComponent<CommitGenieSettings.State> 
         synchronized(apiKeyLock) {
             apiKeyOverridden = true
             cachedApiKey = trimmed
+            pendingWrite = pendingWrite.thenRunAsync({
+                try {
+                    writeKey(trimmed)
+                } catch (e: Exception) {
+                    // 单次失败不能阻断后续保存；本次会话仍使用内存中的密钥。
+                    LOG.warn("保存 API Key 失败", e)
+                }
+            }, executor)
         }
         apiKeyLoaded.complete(trimmed)
-        val credentials = trimmed.takeIf { it.isNotEmpty() }?.let { Credentials("", it) }
-        ApplicationManager.getApplication().executeOnPooledThread {
-            try {
-                PasswordSafe.instance.set(credentialAttributes(), credentials)
-            } catch (e: Exception) {
-                // 钥匙串写入失败不影响本次会话使用内存中的密钥
-                LOG.warn("保存 API Key 失败", e)
-            }
-        }
     }
 
     val isConfigured: Boolean
@@ -124,11 +140,12 @@ class CommitGenieSettings : PersistentStateComponent<CommitGenieSettings.State> 
     /** 密钥仍在后台读取；此时不能把「未配置」当作结论。 */
     val isApiKeyPending: Boolean
         get() = apiKey == null
-    private fun credentialAttributes(): CredentialAttributes =
-        CredentialAttributes(SERVICE_NAME, "apiKey")
 
     companion object {
         private const val SERVICE_NAME = "CommitGenie"
+
+        private fun credentialAttributes(): CredentialAttributes =
+            CredentialAttributes(SERVICE_NAME, "apiKey")
 
         const val DEFAULT_BASE_URL = "https://api.openai.com/v1"
         const val DEFAULT_MODEL = "gpt-4o-mini"

@@ -16,6 +16,7 @@ repositories {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     intellijPlatform {
         // 复用本机已安装的 Android Studio，避免下载完整 IDE 发行包
         local("/Applications/Android Studio.app")
