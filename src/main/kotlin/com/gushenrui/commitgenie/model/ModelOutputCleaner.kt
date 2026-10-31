@@ -33,15 +33,15 @@ object ModelOutputCleaner {
     /**
      * 删除 `<think>…</think>` 等思考区块。
      *
-     * 成对区块只删区块本身，保留其余正文。输出被截断时可能缺少闭合标签：
-     * 只有未闭合标签位于文本开头（即整段都是思考过程）才截断其后内容，
-     * 出现在正文中段的孤立标签保持原样，避免误删正文。
+     * 仅剥离开头的区块，后续前导区块由 clean 循环继续处理。
+     * 未闭合标签位于开头时，其后视为未完成的思考；正文中的标签一律保留，
+     * 与流式过滤器识别到正文后按字面量输出的规则一致。
      */
     private fun stripThinkBlocks(text: String): String {
-        val closed = THINK_BLOCK.replace(text, "")
-        // 只剩开头这个未闭合标签时，其后内容属于被截断的思考过程；其余位置的孤立标签保持原样
-        val open = THINK_OPEN.find(closed)?.takeIf { it.range.first == 0 } ?: return closed
-        return closed.substring(0, open.range.first)
+        val block = THINK_BLOCK.find(text)?.takeIf { it.range.first == 0 }
+        if (block != null) return text.substring(block.range.last + 1)
+        val open = THINK_OPEN.find(text)?.takeIf { it.range.first == 0 }
+        return if (open != null) "" else text
     }
 
     /**

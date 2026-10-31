@@ -17,9 +17,10 @@ object PromptBuilder {
         val styleSection = renderSamples(sampleMessages)
 
         if (custom.isNotEmpty()) {
-            return custom
-                .replace(MACRO_SAMPLES, styleSection)
-                .replace(MACRO_DIFF, diff)
+            // 只扫描原模板一次，插入的历史样本和 diff 不再参与宏展开。
+            return MACRO_PATTERN.replace(custom) { match ->
+                if (match.value == MACRO_SAMPLES) styleSection else diff
+            }
         }
 
         val languageClause = languageInstruction(settings.language, sampleMessages.isNotEmpty())
@@ -63,4 +64,8 @@ object PromptBuilder {
 
     const val MACRO_SAMPLES = "\$SAMPLE_COMMIT_MESSAGES"
     const val MACRO_DIFF = "\$COMMIT_DIFF"
+
+    private val MACRO_PATTERN = Regex(
+        "${Regex.escape(MACRO_SAMPLES)}|${Regex.escape(MACRO_DIFF)}"
+    )
 }

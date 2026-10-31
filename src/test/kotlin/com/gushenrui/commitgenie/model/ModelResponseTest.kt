@@ -151,6 +151,37 @@ class ModelResponseTest {
         assertEquals(listOf("fix: example"), updates)
     }
 
+    @Test
+    fun `anthropic skips leading thinking and collects every text block`() {
+        val json =
+            """{"content":[{"type":"thinking","thinking":"private"},{"type":"text","text":"fix: "},{"type":"text","text":"example"}],"stop_reason":"end_turn"}"""
+        assertEquals("fix: example", read(json, ModelProtocol.ANTHROPIC))
+    }
+
+    @Test
+    fun `anthropic ignores non-text blocks even when they contain text fields`() {
+        val json =
+            """{"content":[{"type":"text","text":"fix: "},{"type":"thinking","text":"not output"},{"type":"tool_use","text":"not output"},{"type":"text","text":"example"}],"stop_reason":"end_turn"}"""
+        assertEquals("fix: example", read(json, ModelProtocol.ANTHROPIC))
+    }
+
+    @Test
+    fun `anthropic preserves whitespace between text blocks`() {
+        val json =
+            """{"content":[{"type":"text","text":"fix: example"},{"type":"text","text":"\n\n"},{"type":"text","text":"Details"}],"stop_reason":"end_turn"}"""
+        assertEquals("fix: example\n\nDetails", read(json, ModelProtocol.ANTHROPIC))
+    }
+
+    @Test
+    fun `anthropic empty and non-text content produce no commit text`() {
+        for (content in listOf("[]", """[{"type":"thinking","thinking":"private"}]""")) {
+            assertEquals(
+                "",
+                read("{\"content\":$content,\"stop_reason\":\"end_turn\"}", ModelProtocol.ANTHROPIC)
+            )
+        }
+    }
+
     private fun noFurtherReads(lines: List<String>): BufferedReader =
         object : BufferedReader(StringReader("")) {
             private val iterator = lines.iterator()

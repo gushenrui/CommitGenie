@@ -483,10 +483,12 @@ class ModelClient(
                 return delta.textOrNull()
             }
             return root.getAsJsonArray("content")
-                ?.firstOrNull()
-                ?.takeIf(JsonElement::isJsonObject)
-                ?.asJsonObject
-                ?.textOrNull()
+                ?.asSequence()
+                ?.filter(JsonElement::isJsonObject)
+                ?.map(JsonElement::getAsJsonObject)
+                ?.filter { it.get("type")?.stringOrNull() == "text" }
+                ?.mapNotNull { it.textOrNull() }
+                ?.joinToString("")
         }
 
         private fun JsonObject.contentOrNull(): String? =
