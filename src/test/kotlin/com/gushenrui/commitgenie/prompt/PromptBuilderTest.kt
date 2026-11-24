@@ -7,6 +7,22 @@ import org.junit.Test
 
 class PromptBuilderTest {
     @Test
+    fun `default prompt enforces conventional title and bullet body`() {
+        val result = build("", listOf("旧格式提交"), "+新增功能")
+
+        assertTrue(
+            result.contains(
+                "Follow this output format exactly:\n" +
+                        "<type>(<scope>): <concise subject>\n\n" +
+                        "- <specific change>"
+            )
+        )
+        assertTrue(result.contains("Leave exactly one blank line between the subject and body."))
+        assertTrue(result.contains("Write 1-8 non-redundant body bullet points"))
+        assertTrue(result.contains("mandatory output format above overrides any conflicting sample format"))
+    }
+
+    @Test
     fun `individual history samples are bounded without splitting emoji`() {
         val markerLength = "… [sample truncated]".length
         val sample =

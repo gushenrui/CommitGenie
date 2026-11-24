@@ -2,8 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-为 Android Studio / IntelliJ IDEA 提供 AI 生成 Git 提交信息的能力，复刻 Android Studio 内置 Gemini
-插件「Suggest commit message」的交互与提示词，但 **完全独立**：不依赖 Gemini 插件，可自由接入 OpenAI 或
+为 Android Studio / IntelliJ IDEA 提供 AI 生成 Git 提交信息的能力，参考 Android Studio 内置 Gemini
+插件「Suggest commit message」的交互，但 **完全独立**：不依赖 Gemini 插件，可自由接入 OpenAI 或
 Anthropic 兼容接口。
 
 在提交面板的消息输入框工具栏点击按钮，或按 `⌃\`（macOS），即可根据 **当前勾选的变更**生成提交信息，生成过程中可随时取消。
@@ -11,14 +11,14 @@ Anthropic 兼容接口。
 ## 特性
 
 - **只处理勾选的变更**：读取提交面板的勾选状态，未被勾选的文件不会进入 diff。
-- **参考仓库历史风格**：默认采样最近 6 条提交信息，让模型模仿项目既有的书写习惯（也支持关掉）。
+- **参考仓库历史用语**：默认采样最近 6 条提交信息，让模型参考项目既有的术语和措辞（也支持关掉），但不覆盖内置输出格式。
 - **流式生成**：边生成边显示，长提交信息无需干等。
 - **随时取消**：生成中再次点击按钮或再次按 `⌃\` 即取消。
 - **富文本提示（rich tooltip）**：按钮在禁用态也会说明原因——未勾选文件、未配置模型、处于 Amend 模式等。
 - **Diff 精简与截断**：自绘 unified diff 头与 hunk，不输出 `IDEA additional info:`、文件版本号等平台附加信息；
   仅保留预算内的完整 hunk，不切断行或 emoji。省略部分变更时会提示；连首个完整变更块都放不下时不发起生成。
-- **可编辑提示词**：内置提示词与原版语义一致，也可用 `$COMMIT_DIFF` / `$SAMPLE_COMMIT_MESSAGES`
-  宏完全自定义。
+- **可编辑提示词**：内置提示词要求 Conventional Commits 标题、空行及 `- ` 要点正文，也可用
+  `$COMMIT_DIFF` / `$SAMPLE_COMMIT_MESSAGES` 宏完全自定义。
 - **API Key 安全存储**：写入系统钥匙串，不落盘到配置文件。
 
 ## 环境要求
@@ -73,10 +73,11 @@ IDE 与 JBR 25。
 | 输出语言                     | `Auto`                      | 填 `Auto` 跟随历史提交语言，也可填 `Chinese`、`English` 等 |
 | 历史提交采样条数             | `6`                         | 填 `0` 表示不采样                                          |
 | Diff 最大字符数              | `40000`                     | 超出部分截断，避免请求体过大                               |
-| 采样仓库历史提交作为风格参考 | 开启                        | 关闭后不读取历史提交                                       |
+| 采样仓库历史提交作为用语参考 | 开启                        | 关闭后不读取历史提交                                       |
 | 自定义提示词                 | 空                          | 留空使用内置提示词                                         |
 
-自定义提示词可用两个宏：
+留空时，内置提示词固定输出 `<type>(<scope>): <标题>`，空一行后输出 1–8 条以 `- `
+开头的具体变更；历史提交只用于参考术语和措辞。自定义提示词可用两个宏：
 
 - `$COMMIT_DIFF`：本次勾选变更的 unified diff
 - `$SAMPLE_COMMIT_MESSAGES`：采样到的历史提交信息
@@ -150,8 +151,8 @@ src/main/kotlin/com/gushenrui/commitgenie/
 
 ## 致谢
 
-提示词语义与交互设计参考 Android Studio 内置 Gemini 插件的「Suggest commit
-message」功能。本项目为独立实现，与该功能无官方关联。
+交互设计参考 Android Studio 内置 Gemini 插件的「Suggest commit message」功能。
+本项目为独立实现，与该功能无官方关联。
 
 ## 许可
 

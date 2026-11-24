@@ -6,8 +6,8 @@ import java.io.IOException
 /**
  * 组装发送给模型的提示词。
  *
- * 内置模板与 Android Studio Gemini 插件保持一致的语义：
- * 约束模型聚焦具体改动、不编造个人信息与工单号，并参考仓库历史提交的行文风格。
+ * 内置模板要求模型使用 Conventional Commits 标题和要点正文：
+ * 聚焦具体改动、不编造个人信息与工单号，并仅参考仓库历史提交的术语和措辞。
  */
 object PromptBuilder {
 
@@ -37,8 +37,21 @@ object PromptBuilder {
         val languageClause = languageInstruction(settings.language, sampleMessages.isNotEmpty())
         return buildString {
             appendLine("You are an experienced software engineer and efficient technical communicator.")
-            appendLine("Summarize the given diffs into a concise commit message.")
-            appendLine("Focus on specific changes.")
+            appendLine("Generate exactly one Git commit message from the given diffs.")
+            appendLine("Follow this output format exactly:")
+            appendLine("<type>(<scope>): <concise subject>")
+            appendLine()
+            appendLine("- <specific change>")
+            appendLine("- <specific change>")
+            appendLine()
+            appendLine("Formatting requirements:")
+            appendLine("- Use one of these types: feat, fix, refactor, perf, docs, test, chore, style, build, ci.")
+            appendLine("- Use a short lowercase English scope that identifies the primary module or feature.")
+            appendLine("- Write the subject and body in the requested language, while keeping type and scope in English.")
+            appendLine("- Leave exactly one blank line between the subject and body.")
+            appendLine("- Write 1-8 non-redundant body bullet points, each starting with \"- \".")
+            appendLine("- Describe only concrete changes supported by the diffs; do not invent details.")
+            appendLine("- Output only the commit message, without code fences, headings, or explanations.")
             appendLine("Do NOT output names, e-mail addresses, or any other personally identifiable information if they are not explicitly in the diffs.")
             appendLine("Do NOT output bug IDs or any other unique identifiers if they are not explicitly in the diffs.")
             if (languageClause.isNotEmpty()) {
@@ -46,7 +59,8 @@ object PromptBuilder {
             }
             appendLine()
             if (styleSection.isNotEmpty()) {
-                appendLine("Here are few sample commit messages to follow their style:")
+                appendLine("Use these sample commit messages only as references for terminology and wording.")
+                appendLine("The mandatory output format above overrides any conflicting sample format:")
                 appendLine(styleSection)
             }
             appendLine("The diffs for the commit message are as follows:")
